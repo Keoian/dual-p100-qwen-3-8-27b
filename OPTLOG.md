@@ -9137,3 +9137,35 @@ its own noise floor for 3 sequences (0.0073, same as its -ub 448). GDN_CHUNKED=0
 with several sequences one sequence's blocks can read a cache row another's blocks write. Now one
 sequence only (the copy for several is ~0.3 ms per pass). 3 sequences: KLD 0.001929, top-1 98.5%.
 
+
+One kernel (`mmvq_f16_gen`) plus an 8-weight unpack per type, written from ggml's reference
+dequantization: q4_0, q4_1, q5_0, q5_1, q8_0, iq4_nl, iq4_xs, q2_K, q3_K, q4_K, q5_K. q6_K keeps its
+own kernel (solo path untouched). Shares the prescaled fp16 activation, its cache, the per-window
+fp16 chains folded into fp32, and the column split. Each warp stages its rows' window bytes in shared
+memory with 16-byte loads (the first version, loading per chunk from global, ran 1.3-2.2x slower
+than the integer path). GLU fusion works for every type; the GDN-gate fusion stays q6_K-only.
+Codebook i-quants (IQ1/IQ2/IQ3) stay on the integer path.
+
+Correctness: test-backend-ops, new eval cases for all 11 types at 2..16 columns, a partial row block,
+K off the 1024 window, small rows and the fused GLU: MUL_MAT 1481/1481, fusion and per-type 742/742.
+
+Speed, 8704x5120 per GPU, us (fp16 generic / integer, test-backend-ops):
+
+    type    n=2          n=4          n=5          n=8          n=10 (integer side = MMQ)
+    q5_K    136 / 134    158 / 213    175 / 247    247 / 349    350 / ~1470
+    q4_K    -            141 / 201    178 / 236    234 / 337    357 / ~1580
+    q3_K    126 / 139    152 / 210    154 / 250    230 / 346    307 / ~1475
+    q4_0    108 / 86     157 / 124    140 / 145    260 / 205    280 / ~1400
+    q8_0    118 / 126    175 / 174    211 / 196    243 / 275    421 / ~1150
+    iq4_xs  126 / 94     177 / 136    -            217 / 208    372 / ~1420
+
+Routing follows the crossover: q2_K/q3_K from 2 columns, q4_K/q5_K from 3, the rest only above 8
+(where the integer side is MMQ). GGML_CUDA_MMVQ_F16_GEN_MIN overrides it for measurement. At 1
+column the generic kernel ties the integer path on q5_K (115 vs 112 us) and wins on q2_K (70 vs 116)
+and q3_K (100 vs 117); not routed yet.
+
+Model level, Q5_K_M requantized from the Q6_K (scratch/quants, test fixture only): -ub 5, 2 chunks,
+gate corpus: PPL 3.9476 integer vs 3.9452 fp16, wall time 2:20 -> 1:49.
+tg256 on that file: 27.12 t/s (Q6_K 32.43). The single-column q5_K path is upstream's (vec_dot_q5_K,
+emulated dp4a, mins via extra dp4a); q6_K's was hand-tuned. Open.
+

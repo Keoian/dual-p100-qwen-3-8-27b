@@ -11304,6 +11304,20 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             }
         }
     }
+    // the generic fp16 multi-column matvec (mmvq-f16.cu) for every other type it takes: 2..16
+    // columns, a partial row block (4100), K not a multiple of the 1024-value window (5376), and the
+    // fused gate+up+SWIGLU
+    for (ggml_type t : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0, GGML_TYPE_IQ4_NL,
+                        GGML_TYPE_IQ4_XS, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}) {
+        for (int n : {2, 3, 5, 8, 10, 16}) {
+            test_cases.emplace_back(new test_mul_mat(t, GGML_TYPE_F32, 4100, n, 5376, {1, 1}, {1, 1}));
+        }
+        test_cases.emplace_back(new test_mul_mat(t, GGML_TYPE_F32, 300, 4, 3072, {1, 1}, {1, 1}));
+        for (int64_t m_batch : {2, 5, 10}) {
+            test_cases.emplace_back(new test_mul_mat_vec_fusion(t, GGML_GLU_OP_SWIGLU, m_batch, 3072, 5376,
+                false, 1, 1, false, false, true, false, {1, 1}));
+        }
+    }
     // the fp16 q6_K gate+up+SWIGLU verify kernel (mmvq-f16.cu): >= 3072 rows, K a multiple of 512
     for (int64_t m_batch : { 2, 3, 4, 5, 6, 10, 13, 16 }) {
         for (int64_t n_rows : { 3072, 8704 }) {
@@ -11718,6 +11732,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     for (auto mk : std::vector<std::pair<int, int>>{{8704, 5120}, {5120, 8704}, {5120, 5120}, {3072, 5120}, {5120, 3072}, {6144, 5120}, {512, 5120}, {24, 5120}}) {
         for (int n : {1, 2, 3, 4, 5, 6, 8, 10, 12, 15}) {
             test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q6_K, GGML_TYPE_F32, mk.first, n, mk.second, {1, 1}, {1, 1}));
+        }
+    }
+    // The same pass for every other weight type (mmvq-f16.cu's generic kernel against the integer
+    // path: GGML_CUDA_MMVQ_F16=0)
+    for (ggml_type t : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0, GGML_TYPE_IQ4_NL,
+                        GGML_TYPE_IQ4_XS, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}) {
+        for (auto mk : std::vector<std::pair<int, int>>{{8704, 5120}, {5120, 8704}, {6144, 5120}, {512, 5120}, {24, 5120}}) {
+            for (int n : {1, 2, 3, 4, 5, 6, 8, 10, 16}) {
+                test_cases.emplace_back(new test_mul_mat(t, GGML_TYPE_F32, mk.first, n, mk.second, {1, 1}, {1, 1}));
+            }
         }
     }
     // Same shapes with an f16 cache. The tile kernel is launched with need_f16_K/V, so a

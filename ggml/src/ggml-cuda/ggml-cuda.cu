@@ -4847,7 +4847,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     // The FFN's gate and up matvecs and their SWIGLU, in one launch (verify widths, fp16 path):
     //   MUL_MAT(up) -> MUL_MAT(gate) -> GLU(SWIGLU, gate, up), in either matvec order, views between.
-    if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_Q6_K && node->ne[0] >= 3072 &&
+    if (node->op == GGML_OP_MUL_MAT && ggml_is_quantized(node->src[0]->type) && node->ne[0] >= 3072 &&
             node->ne[1] >= 2 && node->ne[1] <= MMVQ_F16_MAX_COLS) {
         const int n = cgraph->n_nodes;
         auto next = [&](int j) {
