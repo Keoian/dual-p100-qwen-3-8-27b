@@ -11062,6 +11062,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     // asymmetric head_dim (hsk != hsv) with one or both sides not 64-aligned
     test_cases.emplace_back(new test_flash_attn_ext(72, 64, 4, {1, 1}, 256, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    // prefill attention of this model per GPU under -sm tensor: D 256, 2 KV heads, GQA 6, q4_0 cache
+    for (int64_t nb : {128, 256, 320, 384, 448, 512}) {
+        for (int64_t kv : {256, 512, 768, 1024}) {
+            if (kv < nb) {
+                continue;
+            }
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {6, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0));
+        }
+    }
     test_cases.emplace_back(new test_flash_attn_ext(64, 72, 4, {1, 1}, 256, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
 
     // mixed quant and Q1_0 test cases

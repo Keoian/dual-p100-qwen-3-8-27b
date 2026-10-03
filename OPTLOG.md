@@ -9114,3 +9114,17 @@ Server, 2 slots (-np 2, 131k each), MTP, short prompts: 37-45 t/s per agent (sol
 prompts); 3 slots 20-29 each. Greedy output with a second request in flight matches solo for 1073
 of 1178 chars, then rounding drift; both coherent.
 
+## 277 — FIX: fused norm+gate overwrote its input at some ubatch sizes (shipped bug): kept
+
+Found while checking multi-sequence perplexity: **solo** perplexity with -ub 256/320/384 read
+PPL 10751/26998/305532 (128, 448, 512, 640, 768 fine), on this build and on the 10-01 release.
+GGML_CUDA_FUSE_NORM_GATE=0 fixed it. The fusion runs the gate matmul before the RMS norm, but the
+allocator planned memory for graph order: once the norm has read x, x's buffer may hold the
+matmul's output, so the reordered matmul overwrote x first. Sizes decide the aliasing. Fix: fuse
+only when the matmul output does not overlap x, and the output aliases x or the matmul only with an
+identical layout. -ub 512 PPL unchanged to the digit (3.3551); 256/320/384 now 3.3551/3.3645/3.3542.
+A server prompt whose last partial ubatch fell in that range could have been hit.
+Also seen, not fixed: GGML_CUDA_FUSE_FFN_GLU=0 and GGML_CUDA_DISABLE_FUSION=1 abort at
+ggml-cuda.cu GGML_ASSERT(!ggml_cuda_gemm_fold_glu_pending()) in prefill; -sm layer reads PPL 28.5
+solo (tensor split is the only tested mode).
+
