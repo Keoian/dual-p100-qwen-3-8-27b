@@ -1018,146 +1018,272 @@ static __global__ void mul_mat_vec_q(
     int mis[rows_per_warp];   // byte offset of the block run inside its staged copy
     int irows[rows_per_warp]; // clamped row index actually addressed, per staged row
 
-    // Address math hoisted out of the staging loop: each row's clamped index and global pointer
-    // are computed once, and the pointer advances by a constant per trip.
-    constexpr int kb_stride = split_rows ? blocks_per_warp : blocks_per_iter;
-    int kbw0 = split_rows ? 0 : int(threadIdx.y)*blocks_per_warp;
-    const char * xcur[rows_per_warp];
-#pragma unroll
-    for (int i = 0; i < rows_per_warp; ++i) {
-        // Clamp the row used for addressing: a block covers rows_per_cuda_block rows whether or
-        // not the tensor has that many left, and the results for the surplus rows are dropped at
-        // write-back. Without this the staging reads off the end of the weights.
-        const int arow = min(warp_row0 + i, int(nrows_x) - 1);
-        irows[i] = arow;
-        xcur[i]  = (const char *) vx + size_t(kbx_offset + (arow - warp_row0)*stride_row_x + kbw0)*blck_size;
-    }
-    const int ylane = (int) threadIdx.x;
-    // bytes of weights / q8_1 activation left in this warp's walk, so the per-trip run lengths
-    // are a min() against a running count instead of a multiply (block sizes are not powers of 2)
-    constexpr int y_blk_bytes = (qk/QK8_1) * (int) sizeof(block_q8_1);
-    int xleft = (blocks_per_row_x - kbw0) * blck_size;
-    int yleft = (blocks_per_row_x - kbw0) * y_blk_bytes;
-    [[maybe_unused]] const char * ycur[ncols_dst];
-#pragma unroll
-    for (int j = 0; j < ncols_dst; ++j) {
-        ycur[j] = (const char *) (y + j*stride_col_y + kbw0*(qk/QK8_1));
-    }
-
-    // The whole warp must iterate together for the staging barriers, so loop over the warp's
-    // base block and bound the per-thread work with a guard rather than the loop condition.
-    for (int kbw = kbw0; kbw < blocks_per_row_x; kbw += kb_stride) {
-        const int nbytes  = min(blocks_per_warp*blck_size, xleft);
-        const int nybytes = min(y_blocks_per_warp*(int) sizeof(block_q8_1), yleft);
-        xleft -= kb_stride*blck_size;
-        yleft -= kb_stride*y_blk_bytes;
-
-        // previous iteration's readers must finish before we overwrite the stage
-        if constexpr (stage_y_block) { __syncthreads(); } else { __syncwarp(); }
-#pragma unroll
+    // One column (solo decode): addresses advance per trip instead of being recomputed. Several columns
+    // keep the original loop, which measured faster there (q4_0 n=5, q4_1 n=2 and 8: 3-7%). Same results.
+    if constexpr (ncols_dst == 1) {
+        // Address math hoisted out of the staging loop: each row's clamped index and global pointer
+        // are computed once, and the pointer advances by a constant per trip.
+        constexpr int kb_stride = split_rows ? blocks_per_warp : blocks_per_iter;
+        int kbw0 = split_rows ? 0 : int(threadIdx.y)*blocks_per_warp;
+        const char * xcur[rows_per_warp];
+    #pragma unroll
         for (int i = 0; i < rows_per_warp; ++i) {
-            const char *   gsrc   = xcur[i];
-            xcur[i] += kb_stride*blck_size;
-            const int      m      = (int) ((uintptr_t) gsrc & 15);
-            const uint4 *  gsrc16 = (const uint4 *) (gsrc - m);
-            const int      nu4    = (m + nbytes + 15) >> 4;
-            mis[i]   = m;
-            // Compile-time trip count and an explicit __ldg: with a runtime loop bound ptxas
-            // emits predicated *generic* loads (LD.E) for the staging reads instead of LDG,
-            // which throws away the whole point of staging.
-            uint4 * dstage = x_stage[threadIdx.y][i] + ylane;
-            const uint4 * g = gsrc16 + ylane;
-#pragma unroll
-            for (int r = 0; r < stage_rounds; ++r) {
-                if (r*warp_size + ylane < nu4) {
-                    dstage[r*warp_size] = __ldg(g + r*warp_size);
-                }
-            }
+            // Clamp the row used for addressing: a block covers rows_per_cuda_block rows whether or
+            // not the tensor has that many left, and the results for the surplus rows are dropped at
+            // write-back. Without this the staging reads off the end of the weights.
+            const int arow = min(warp_row0 + i, int(nrows_x) - 1);
+            irows[i] = arow;
+            xcur[i]  = (const char *) vx + size_t(kbx_offset + (arow - warp_row0)*stride_row_x + kbw0)*blck_size;
+        }
+        const int ylane = (int) threadIdx.x;
+        // bytes of weights / q8_1 activation left in this warp's walk, so the per-trip run lengths
+        // are a min() against a running count instead of a multiply (block sizes are not powers of 2)
+        constexpr int y_blk_bytes = (qk/QK8_1) * (int) sizeof(block_q8_1);
+        int xleft = (blocks_per_row_x - kbw0) * blck_size;
+        int yleft = (blocks_per_row_x - kbw0) * y_blk_bytes;
+        [[maybe_unused]] const char * ycur[ncols_dst];
+    #pragma unroll
+        for (int j = 0; j < ncols_dst; ++j) {
+            ycur[j] = (const char *) (y + j*stride_col_y + kbw0*(qk/QK8_1));
         }
 
-        int ymis[y_slots] = { 0 }; // byte offset of each staged run inside its copy
-        if constexpr (stage_y_warp) {
-            const char *  ysrc   = ycur[0];
-            ycur[0] += kb_stride*y_blk_bytes;
-            ymis[0] = (int) ((uintptr_t) ysrc & 15);
-            const uint4 * ysrc16 = (const uint4 *) ((uintptr_t) ysrc - ymis[0]);
-            const int     nyu4   = (ymis[0] + nybytes + 15) >> 4;
-#pragma unroll
-            for (int r = 0; r < y_stage_rounds_warp; ++r) {
-                const int k = r*warp_size + threadIdx.x;
-                if (k < nyu4) {
-                    y_stage[threadIdx.y][k] = __ldg(ysrc16 + k);
-                }
-            }
-            __syncwarp();
-        } else if constexpr (stage_y_block) {
-            // Every warp is on the same kbw here, so the whole block fetches one copy per column.
-#pragma unroll
-            for (int j = 0; j < ncols_dst; ++j) {
-                const char *  ysrc   = ycur[j];
-                ycur[j] += kb_stride*y_blk_bytes;
-                const int     m      = (int) ((uintptr_t) ysrc & 15);
-                const uint4 * ysrc16 = (const uint4 *) ((uintptr_t) ysrc - m);
-                const int     nyu4   = (m + nybytes + 15) >> 4;
-                ymis[j] = m;
-#pragma unroll
-                for (int r = 0; r < y_stage_rounds; ++r) {
-                    const int k = r*nwarps*warp_size + tid;
-                    if (k < nyu4) {
-                        y_stage[j][k] = __ldg(ysrc16 + k);
+        // The whole warp must iterate together for the staging barriers, so loop over the warp's
+        // base block and bound the per-thread work with a guard rather than the loop condition.
+        for (int kbw = kbw0; kbw < blocks_per_row_x; kbw += kb_stride) {
+            const int nbytes  = min(blocks_per_warp*blck_size, xleft);
+            const int nybytes = min(y_blocks_per_warp*(int) sizeof(block_q8_1), yleft);
+            xleft -= kb_stride*blck_size;
+            yleft -= kb_stride*y_blk_bytes;
+
+            // previous iteration's readers must finish before we overwrite the stage
+            if constexpr (stage_y_block) { __syncthreads(); } else { __syncwarp(); }
+    #pragma unroll
+            for (int i = 0; i < rows_per_warp; ++i) {
+                const char *   gsrc   = xcur[i];
+                xcur[i] += kb_stride*blck_size;
+                const int      m      = (int) ((uintptr_t) gsrc & 15);
+                const uint4 *  gsrc16 = (const uint4 *) (gsrc - m);
+                const int      nu4    = (m + nbytes + 15) >> 4;
+                mis[i]   = m;
+                // Compile-time trip count and an explicit __ldg: with a runtime loop bound ptxas
+                // emits predicated *generic* loads (LD.E) for the staging reads instead of LDG,
+                // which throws away the whole point of staging.
+                uint4 * dstage = x_stage[threadIdx.y][i] + ylane;
+                const uint4 * g = gsrc16 + ylane;
+    #pragma unroll
+                for (int r = 0; r < stage_rounds; ++r) {
+                    if (r*warp_size + ylane < nu4) {
+                        dstage[r*warp_size] = __ldg(g + r*warp_size);
                     }
                 }
             }
-            __syncthreads();
-        } else {
-            __syncwarp();
-        }
 
-        const int kbx = kbw + sub;
-        if (kbx < blocks_per_row_x) {
-            const int kby = kbx * (qk/QK8_1); // y block index that aligns with kbx
+            int ymis[y_slots] = { 0 }; // byte offset of each staged run inside its copy
+            if constexpr (stage_y_warp) {
+                const char *  ysrc   = ycur[0];
+                ycur[0] += kb_stride*y_blk_bytes;
+                ymis[0] = (int) ((uintptr_t) ysrc & 15);
+                const uint4 * ysrc16 = (const uint4 *) ((uintptr_t) ysrc - ymis[0]);
+                const int     nyu4   = (ymis[0] + nybytes + 15) >> 4;
+    #pragma unroll
+                for (int r = 0; r < y_stage_rounds_warp; ++r) {
+                    const int k = r*warp_size + threadIdx.x;
+                    if (k < nyu4) {
+                        y_stage[threadIdx.y][k] = __ldg(ysrc16 + k);
+                    }
+                }
+                __syncwarp();
+            } else if constexpr (stage_y_block) {
+                // Every warp is on the same kbw here, so the whole block fetches one copy per column.
+    #pragma unroll
+                for (int j = 0; j < ncols_dst; ++j) {
+                    const char *  ysrc   = ycur[j];
+                    ycur[j] += kb_stride*y_blk_bytes;
+                    const int     m      = (int) ((uintptr_t) ysrc & 15);
+                    const uint4 * ysrc16 = (const uint4 *) ((uintptr_t) ysrc - m);
+                    const int     nyu4   = (m + nybytes + 15) >> 4;
+                    ymis[j] = m;
+    #pragma unroll
+                    for (int r = 0; r < y_stage_rounds; ++r) {
+                        const int k = r*nwarps*warp_size + tid;
+                        if (k < nyu4) {
+                            y_stage[j][k] = __ldg(ysrc16 + k);
+                        }
+                    }
+                }
+                __syncthreads();
+            } else {
+                __syncwarp();
+            }
 
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_DGX_SPARK
-        // start the next iterations' weight loads early
-        if constexpr (mmvq_should_prefetch(type)) {
-            constexpr int pf_dist = 2; // loop iterations, not blocks
-            const int kbx_pf = kbx + pf_dist*blocks_per_iter;
-            if (kbx_pf < blocks_per_row_x) {
-#pragma unroll
-                for (int i = 0; i < rows_per_cuda_block; ++i) {
-                    const size_t off = (size_t)(kbx_offset + i*stride_row_x + kbx_pf) * ggml_cuda_type_traits<type>::bs;
-                    mmvq_prefetch_l2((const char *) vx + off);
-                    if constexpr (has_fusion) {
-                        if (use_gate) {
-                            mmvq_prefetch_l2((const char *) vgate + off);
+            const int kbx = kbw + sub;
+            if (kbx < blocks_per_row_x) {
+                const int kby = kbx * (qk/QK8_1); // y block index that aligns with kbx
+
+    #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_DGX_SPARK
+            // start the next iterations' weight loads early
+            if constexpr (mmvq_should_prefetch(type)) {
+                constexpr int pf_dist = 2; // loop iterations, not blocks
+                const int kbx_pf = kbx + pf_dist*blocks_per_iter;
+                if (kbx_pf < blocks_per_row_x) {
+    #pragma unroll
+                    for (int i = 0; i < rows_per_cuda_block; ++i) {
+                        const size_t off = (size_t)(kbx_offset + i*stride_row_x + kbx_pf) * ggml_cuda_type_traits<type>::bs;
+                        mmvq_prefetch_l2((const char *) vx + off);
+                        if constexpr (has_fusion) {
+                            if (use_gate) {
+                                mmvq_prefetch_l2((const char *) vgate + off);
+                            }
+                        }
+                    }
+                }
+            }
+    #endif
+
+    #pragma unroll
+                for (int j = 0; j < ncols_dst; ++j) {
+    #pragma unroll
+                    for (int i = 0; i < rows_per_warp; ++i) {
+                        const char * xs = (const char *) x_stage[threadIdx.y][i] + mis[i] + sub*blck_size;
+                        if constexpr (stage_y) {
+                            // Derived with char* arithmetic from the shared array itself: a uintptr_t
+                            // round trip loses the shared window and ptxas silently emits generic loads.
+                            const int    slot = stage_y_block ? j : int(threadIdx.y);
+                            const char * ys = (const char *) y_stage[slot] + ymis[stage_y_block ? j : 0]
+                                            + sub*(qk/QK8_1)*(int) sizeof(block_q8_1);
+                            tmp[j][i] += vec_dot_q_cuda(xs, (const block_q8_1 *) ys, 0, kqs);
+                        } else {
+                            tmp[j][i] += vec_dot_q_cuda(
+                                xs, &y[j*stride_col_y + kby], 0, kqs);
+                        }
+                        if constexpr (has_fusion) {
+                            if (use_gate) {
+                                tmp_gate[j][i] += vec_dot_q_cuda(
+                                    vgate, &y[j*stride_col_y + kby],
+                                    kbx_offset + (irows[i] - warp_row0)*stride_row_x + kbx, kqs);
+                            }
                         }
                     }
                 }
             }
         }
-#endif
+    } else {
+        // The whole warp must iterate together for the staging barriers, so loop over the warp's
+        // base block and bound the per-thread work with a guard rather than the loop condition.
+        constexpr int kb_stride = split_rows ? blocks_per_warp : blocks_per_iter;
+        for (int kbw = split_rows ? 0 : int(threadIdx.y)*blocks_per_warp; kbw < blocks_per_row_x; kbw += kb_stride) {
+            const int nblk = min(blocks_per_warp, blocks_per_row_x - kbw);
 
-#pragma unroll
-            for (int j = 0; j < ncols_dst; ++j) {
-#pragma unroll
-                for (int i = 0; i < rows_per_warp; ++i) {
-                    const char * xs = (const char *) x_stage[threadIdx.y][i] + mis[i] + sub*blck_size;
-                    if constexpr (stage_y) {
-                        // Derived with char* arithmetic from the shared array itself: a uintptr_t
-                        // round trip loses the shared window and ptxas silently emits generic loads.
-                        const int    slot = stage_y_block ? j : int(threadIdx.y);
-                        const char * ys = (const char *) y_stage[slot] + ymis[stage_y_block ? j : 0]
-                                        + sub*(qk/QK8_1)*(int) sizeof(block_q8_1);
-                        tmp[j][i] += vec_dot_q_cuda(xs, (const block_q8_1 *) ys, 0, kqs);
-                    } else {
-                        tmp[j][i] += vec_dot_q_cuda(
-                            xs, &y[j*stride_col_y + kby], 0, kqs);
+            // previous iteration's readers must finish before we overwrite the stage
+            if constexpr (stage_y_block) { __syncthreads(); } else { __syncwarp(); }
+    #pragma unroll
+            for (int i = 0; i < rows_per_warp; ++i) {
+                // Clamp the row used for addressing: a block covers rows_per_cuda_block rows whether or
+                // not the tensor has that many left, and the results for the surplus rows are dropped at
+                // write-back. Without this the staging reads off the end of the weights, which the
+                // original two-row geometry got away with but eight rows would not.
+                const int      arow   = min(warp_row0 + i, int(nrows_x) - 1);
+                const int      irow   = arow - warp_row0;
+                const char *   gsrc   = (const char *) vx + size_t(kbx_offset + irow*stride_row_x + kbw)*blck_size;
+                const int      m      = (int) ((uintptr_t) gsrc & 15);
+                const uint4 *  gsrc16 = (const uint4 *) ((uintptr_t) gsrc - m);
+                const int      nu4    = (m + nblk*blck_size + 15) / 16;
+                mis[i]   = m;
+                irows[i] = arow;
+                // Compile-time trip count and an explicit __ldg: with a runtime loop bound ptxas
+                // emits predicated *generic* loads (LD.E) for the staging reads instead of LDG,
+                // which throws away the whole point of staging.
+    #pragma unroll
+                for (int r = 0; r < stage_rounds; ++r) {
+                    const int k = r*warp_size + threadIdx.x;
+                    if (k < nu4) {
+                        x_stage[threadIdx.y][i][k] = __ldg(gsrc16 + k);
                     }
-                    if constexpr (has_fusion) {
-                        if (use_gate) {
-                            tmp_gate[j][i] += vec_dot_q_cuda(
-                                vgate, &y[j*stride_col_y + kby],
-                                kbx_offset + (irows[i] - warp_row0)*stride_row_x + kbx, kqs);
+                }
+            }
+
+            int ymis[y_slots] = { 0 }; // byte offset of each staged run inside its copy
+            if constexpr (stage_y_warp) {
+                const char *  ysrc   = (const char *) (y + kbw*(qk/QK8_1));
+                ymis[0] = (int) ((uintptr_t) ysrc & 15);
+                const uint4 * ysrc16 = (const uint4 *) ((uintptr_t) ysrc - ymis[0]);
+                const int     nyu4   = (ymis[0] + nblk*(qk/QK8_1)*(int) sizeof(block_q8_1) + 15) / 16;
+    #pragma unroll
+                for (int r = 0; r < y_stage_rounds_warp; ++r) {
+                    const int k = r*warp_size + threadIdx.x;
+                    if (k < nyu4) {
+                        y_stage[threadIdx.y][k] = __ldg(ysrc16 + k);
+                    }
+                }
+                __syncwarp();
+            } else if constexpr (stage_y_block) {
+                // Every warp is on the same kbw here, so the whole block fetches one copy per column.
+    #pragma unroll
+                for (int j = 0; j < ncols_dst; ++j) {
+                    const char *  ysrc   = (const char *) (y + j*stride_col_y + kbw*(qk/QK8_1));
+                    const int     m      = (int) ((uintptr_t) ysrc & 15);
+                    const uint4 * ysrc16 = (const uint4 *) ((uintptr_t) ysrc - m);
+                    const int     nyu4   = (m + nblk*(qk/QK8_1)*(int) sizeof(block_q8_1) + 15) / 16;
+                    ymis[j] = m;
+    #pragma unroll
+                    for (int r = 0; r < y_stage_rounds; ++r) {
+                        const int k = r*nwarps*warp_size + tid;
+                        if (k < nyu4) {
+                            y_stage[j][k] = __ldg(ysrc16 + k);
+                        }
+                    }
+                }
+                __syncthreads();
+            } else {
+                __syncwarp();
+            }
+
+            const int kbx = kbw + sub;
+            if (kbx < blocks_per_row_x) {
+                const int kby = kbx * (qk/QK8_1); // y block index that aligns with kbx
+
+    #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_DGX_SPARK
+            // start the next iterations' weight loads early
+            if constexpr (mmvq_should_prefetch(type)) {
+                constexpr int pf_dist = 2; // loop iterations, not blocks
+                const int kbx_pf = kbx + pf_dist*blocks_per_iter;
+                if (kbx_pf < blocks_per_row_x) {
+    #pragma unroll
+                    for (int i = 0; i < rows_per_cuda_block; ++i) {
+                        const size_t off = (size_t)(kbx_offset + i*stride_row_x + kbx_pf) * ggml_cuda_type_traits<type>::bs;
+                        mmvq_prefetch_l2((const char *) vx + off);
+                        if constexpr (has_fusion) {
+                            if (use_gate) {
+                                mmvq_prefetch_l2((const char *) vgate + off);
+                            }
+                        }
+                    }
+                }
+            }
+    #endif
+
+    #pragma unroll
+                for (int j = 0; j < ncols_dst; ++j) {
+    #pragma unroll
+                    for (int i = 0; i < rows_per_warp; ++i) {
+                        const char * xs = (const char *) x_stage[threadIdx.y][i] + mis[i] + sub*blck_size;
+                        if constexpr (stage_y) {
+                            // Derived with char* arithmetic from the shared array itself: a uintptr_t
+                            // round trip loses the shared window and ptxas silently emits generic loads.
+                            const int    slot = stage_y_block ? j : int(threadIdx.y);
+                            const char * ys = (const char *) y_stage[slot] + ymis[stage_y_block ? j : 0]
+                                            + sub*(qk/QK8_1)*(int) sizeof(block_q8_1);
+                            tmp[j][i] += vec_dot_q_cuda(xs, (const block_q8_1 *) ys, 0, kqs);
+                        } else {
+                            tmp[j][i] += vec_dot_q_cuda(
+                                xs, &y[j*stride_col_y + kby], 0, kqs);
+                        }
+                        if constexpr (has_fusion) {
+                            if (use_gate) {
+                                tmp_gate[j][i] += vec_dot_q_cuda(
+                                    vgate, &y[j*stride_col_y + kby],
+                                    kbx_offset + (irows[i] - warp_row0)*stride_row_x + kbx, kqs);
+                            }
                         }
                     }
                 }

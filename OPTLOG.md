@@ -9251,3 +9251,19 @@ Gate: tg256 32.39 ± 0.19 (warm cards, 59 C), PPL 2.6101, full suite 16658/16658
 Not done: integer single-column ports for iq2/iq3/iq1/mxfp4 (agents stopped first; stock integer
 path there), whole-model KLD for zoo2 (iq3/iq2_s/iq1_m/mxfp4 layers, baked at
 /mnt/fast/p100-scratch/quants), the agents' sweep macros left at defaults in mmvq-f16.cu.
+
+## 283 — no-regression pass over every type and width: kept
+
+test-backend-ops perf, every type x n=1..16 x {8704x5120, 5120x8704, 512x5120}, against the morning's
+baseline (/mnt/fast/p100-scratch/hx/baseline.txt, cmp.py). After 282, 21 cases were >3% slower. Fixes:
+- mmvq.cu: the hoisted staging loop (282) only for one column; several columns keep the original
+  loop (q4_0 n=5 124 -> 134, q4_1 n=2/8, iq1_m n=4, q3_K n=2 had slowed 3-7%). Same results.
+- mmvq-f16.cu: rows < 1024 at 5+ columns keep the generic kernel for q2_K..q5_K (the dedicated
+  kernels lost on 512-row matrices there); iq4 kernels only below 15 columns; q8_0 fp16 at 3..5 only.
+Result: nothing >3% slower anywhere (worst 1.038 on q8_0 before its fix, then under baseline).
+Geo-mean new/old per type: mxfp4 0.58, iq1_s 0.71, iq1_m 0.71, iq3_s 0.72, iq3_xxs 0.74, iq2_xs 0.78,
+iq2_s 0.79, q2_K 0.80, q4_K 0.81, q5_K 0.82, iq2_xxs 0.84, q8_0 0.84, q4_1 0.86, q3_K 0.89, q4_0 0.92,
+q5_1 0.92, iq4_nl 0.98, iq4_xs 0.98, q5_0 0.99, q6_K 1.00 (unchanged).
+Gate: tg256 32.99 ± 0.15 (cold; the gate's own run read 26.50 ± 2.94 straight after four KLD
+perplexity passes), PPL 2.6101, full suite 16658/16658. KLD vs the 10-01 release: Q6_K -ub 1 mean 0
+(max 0.000053), -ub 5 mean 0 (max 0.000059) = identical; zoo -ub 1 0.003334, -ub 5 0.003442.

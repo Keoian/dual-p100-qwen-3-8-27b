@@ -2150,8 +2150,10 @@ static bool mmvq_f16_gen_takes(const ggml_type t, const int64_t ncols) {
     switch (t) {
         case GGML_TYPE_Q2_K: case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_MXFP4:
             return ncols >= 2;
-        case GGML_TYPE_Q3_K: case GGML_TYPE_Q8_0:
+        case GGML_TYPE_Q3_K:
             return ncols >= 3;
+        case GGML_TYPE_Q8_0: // its integer path is the faster one at 6..8
+            return ncols >= 3 && ncols <= 5;
         case GGML_TYPE_Q4_0: // its integer path is the faster one at 4..8
             return ncols >= 2 && ncols <= 3;
         default:
@@ -2694,19 +2696,22 @@ static void mmvq_f16_iq2_launch(const uint8_t * W, const uint8_t * W2, const int
 static void mmvq_f16_gen_launch(const ggml_type type, const uint8_t * W, const uint8_t * W2, const int64_t row_bytes,
                                 const __half * xs, const float * sc, float * Y, const int64_t sy, const int64_t rows,
                                 const int64_t K, const int64_t ncols, const bool glu, cudaStream_t stream) {
-    if (type == GGML_TYPE_Q5_K && mmvq_f16_q5_K_launch(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream)) {
+    // The dedicated kernels lose to the generic one on small matrices at 5+ columns (512 rows), and
+    // the iq4 kernel at 8 columns per launch (15..16 columns); those keep the generic kernel.
+    const bool small_wide = rows < 1024 && ncols >= 5;
+    if (type == GGML_TYPE_Q5_K && !small_wide && mmvq_f16_q5_K_launch(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream)) {
         return;
     }
-    if (type == GGML_TYPE_Q4_K) {
+    if (type == GGML_TYPE_Q4_K && !small_wide) {
         mmvq_f16_q4_K_launch(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream);
         return;
     }
-    if (type == GGML_TYPE_IQ4_NL) {
+    if (type == GGML_TYPE_IQ4_NL && ncols < 15) {
         mmvq_f16_iq4_launch<GGML_TYPE_IQ4_NL>(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream);
         CUDA_CHECK(cudaGetLastError());
         return;
     }
-    if (type == GGML_TYPE_IQ4_XS) {
+    if (type == GGML_TYPE_IQ4_XS && ncols < 15) {
         mmvq_f16_iq4_launch<GGML_TYPE_IQ4_XS>(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream);
         CUDA_CHECK(cudaGetLastError());
         return;
@@ -2736,8 +2741,8 @@ static void mmvq_f16_gen_launch(const ggml_type type, const uint8_t * W, const u
         return;
     }
     const int nw = (int) ((K + MMVQ_F16_WIN - 1)/MMVQ_F16_WIN);
-    if (type == GGML_TYPE_Q2_K) { mmvq_f16_k23_launch<GGML_TYPE_Q2_K>(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream); CUDA_CHECK(cudaGetLastError()); return; }
-    if (type == GGML_TYPE_Q3_K) { mmvq_f16_k23_launch<GGML_TYPE_Q3_K>(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream); CUDA_CHECK(cudaGetLastError()); return; }
+    if (type == GGML_TYPE_Q2_K && !small_wide) { mmvq_f16_k23_launch<GGML_TYPE_Q2_K>(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream); CUDA_CHECK(cudaGetLastError()); return; }
+    if (type == GGML_TYPE_Q3_K && !small_wide) { mmvq_f16_k23_launch<GGML_TYPE_Q3_K>(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream); CUDA_CHECK(cudaGetLastError()); return; }
     if (type == GGML_TYPE_MXFP4) { // own kernel (mmvq_f16_mx)
         mmvq_f16_gen_columns(ncols, [&](const int64_t c0, auto ncc) {
             constexpr int NC = decltype(ncc)::value;
