@@ -3975,6 +3975,13 @@ static bool ggml_cuda_try_gdn_state_gather(const ggml_cgraph * cgraph, int i) {
             node->src[1]->ne[0] != node->ne[1]) {
         return false;
     }
+    // one sequence only: with several, the delta net's blocks for one sequence can read a state row
+    // that another sequence's blocks write (the gather's source rows are cache cells, and the new states
+    // go back into the cache), which the chunked kernel does. Multi-slot prefill read wrong states:
+    // KLD 0.044 against one sequence at a time, 0.0019 with the copy (OPTLOG multi-slot).
+    if (node->ne[1] != 1) {
+        return false;
+    }
     const ggml_tensor * aliases[8] = { node };
     int n_alias = 1;
     auto is_alias = [&](const ggml_tensor * t) {

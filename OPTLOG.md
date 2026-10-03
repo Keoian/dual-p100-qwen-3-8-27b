@@ -9128,3 +9128,12 @@ Also seen, not fixed: GGML_CUDA_FUSE_FFN_GLU=0 and GGML_CUDA_DISABLE_FUSION=1 ab
 ggml-cuda.cu GGML_ASSERT(!ggml_cuda_gemm_fold_glu_pending()) in prefill; -sm layer reads PPL 28.5
 solo (tensor split is the only tested mode).
 
+## 278 — FIX: GDN state gather raced across sequences (multi-sequence prefill): kept
+
+After 277, 3 parallel perplexity sequences still read KLD 0.044 (top-1 93.7%) against one at a time;
+a harmless path change (-ub 448) reads 0.0013. The reference fork build d886a5eb9 (build-stock) reads
+its own noise floor for 3 sequences (0.0073, same as its -ub 448). GDN_CHUNKED=0 or GDN_GATHER=0 ->
+0.0019. The gather fusion lets the delta net read recurrent states from the cache through the index;
+with several sequences one sequence's blocks can read a cache row another's blocks write. Now one
+sequence only (the copy for several is ~0.3 ms per pass). 3 sequences: KLD 0.001929, top-1 98.5%.
+

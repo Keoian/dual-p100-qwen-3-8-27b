@@ -11369,6 +11369,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_moe_reduce(2048, 15, 40, false, true));
     test_cases.emplace_back(new test_moe_reduce(2048, 16, 32, false, true));
 
+    // prefill widths of this model per GPU under -sm tensor: 8 k heads x 128, v_repeat 3 (OPTLOG multi-slot)
+    for (int64_t nt : {64, 128, 170, 256, 320, 384, 448, 512}) {
+        test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 8, 128, nt, 1, 3));
+    }
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 8, 128, 170, 3, 3));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1, 1));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 16, 1, 1));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 16, 1, 1, 1, true, true));
