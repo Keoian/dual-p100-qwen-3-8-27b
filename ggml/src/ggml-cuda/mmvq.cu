@@ -3,6 +3,7 @@
 #include "quantize.cuh"
 #include "unary.cuh"
 #include "vecdotq.cuh"
+#include "vecdotq-p100.cuh"
 #include "active-tokens.cuh"
 
 #include <cstdint>
@@ -43,17 +44,54 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) 
     switch (type) {
         case GGML_TYPE_Q1_0:    return vec_dot_q1_0_q8_1;
         case GGML_TYPE_Q2_0:    return vec_dot_q2_0_q8_1;
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q4_0:    return vec_dot_q4_0_q8_1_p100;
+#else
         case GGML_TYPE_Q4_0:    return vec_dot_q4_0_q8_1;
+#endif
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q4_1:    return vec_dot_q4_1_q8_1_p100;
+#else
         case GGML_TYPE_Q4_1:    return vec_dot_q4_1_q8_1;
+#endif
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q5_0:    return vec_dot_q5_0_q8_1_p100;
+#else
         case GGML_TYPE_Q5_0:    return vec_dot_q5_0_q8_1;
+#endif
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q5_1:    return vec_dot_q5_1_q8_1_p100;
+#else
         case GGML_TYPE_Q5_1:    return vec_dot_q5_1_q8_1;
+#endif
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q8_0:    return vec_dot_q8_0_q8_1_p100;
+#else
         case GGML_TYPE_Q8_0:    return vec_dot_q8_0_q8_1;
+#endif
         case GGML_TYPE_MXFP4:   return vec_dot_mxfp4_q8_1;
         case GGML_TYPE_NVFP4:   return vec_dot_nvfp4_q8_1;
+        // P100: weight halves fed straight to the XMADs, min/bias folded in, vdr 4 (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600 // sm_60-only build (GGML_CUDA_MMVQ_PASCAL is defined below)
+        case GGML_TYPE_Q2_K:    return vec_dot_q2_K_q8_1_p100;
+        case GGML_TYPE_Q3_K:    return vec_dot_q3_K_q8_1_p100;
+#else
         case GGML_TYPE_Q2_K:    return vec_dot_q2_K_q8_1;
         case GGML_TYPE_Q3_K:    return vec_dot_q3_K_q8_1;
+#endif
+        // P100: quant halves fed straight to the XMADs, vdr 4, exact integer sums (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q4_K:    return vec_dot_q4_K_q8_1_p100;
+        case GGML_TYPE_Q5_K:    return vec_dot_q5_K_q8_1_p100;
+#else
         case GGML_TYPE_Q4_K:    return vec_dot_q4_K_q8_1;
         case GGML_TYPE_Q5_K:    return vec_dot_q5_K_q8_1;
+#endif
         case GGML_TYPE_Q6_K:    return vec_dot_q6_K_q8_1;
         case GGML_TYPE_IQ2_XXS: return vec_dot_iq2_xxs_q8_1;
         case GGML_TYPE_IQ2_XS:  return vec_dot_iq2_xs_q8_1;
@@ -61,8 +99,18 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) 
         case GGML_TYPE_IQ3_XXS: return vec_dot_iq3_xxs_q8_1;
         case GGML_TYPE_IQ1_S:   return vec_dot_iq1_s_q8_1;
         case GGML_TYPE_IQ1_M:   return vec_dot_iq1_m_q8_1;
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_IQ4_NL:  return vec_dot_iq4_nl_q8_1_p100;
+#else
         case GGML_TYPE_IQ4_NL:  return vec_dot_iq4_nl_q8_1;
+#endif
+        // P100: halves fed straight to the XMADs, fewer table PRMTs (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_IQ4_XS:  return vec_dot_iq4_xs_q8_1_p100;
+#else
         case GGML_TYPE_IQ4_XS:  return vec_dot_iq4_xs_q8_1;
+#endif
         case GGML_TYPE_IQ3_S:   return vec_dot_iq3_s_q8_1;
         default:                return nullptr;
     }
@@ -72,25 +120,70 @@ static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q1_0:    return VDR_Q1_0_Q8_1_MMVQ;
         case GGML_TYPE_Q2_0:    return VDR_Q2_0_Q8_1_MMVQ;
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q4_0:    return VDR_Q4_0_Q8_1_MMVQ_P100;
+#else
         case GGML_TYPE_Q4_0:    return VDR_Q4_0_Q8_1_MMVQ;
+#endif
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q4_1:    return VDR_Q4_1_Q8_1_MMVQ_P100;
+#else
         case GGML_TYPE_Q4_1:    return VDR_Q4_1_Q8_1_MMVQ;
+#endif
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q5_0:    return VDR_Q5_0_Q8_1_MMVQ_P100;
+#else
         case GGML_TYPE_Q5_0:    return VDR_Q5_0_Q8_1_MMVQ;
+#endif
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q5_1:    return VDR_Q5_1_Q8_1_MMVQ_P100;
+#else
         case GGML_TYPE_Q5_1:    return VDR_Q5_1_Q8_1_MMVQ;
+#endif
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q8_0:    return VDR_Q8_0_Q8_1_MMVQ_P100;
+#else
         case GGML_TYPE_Q8_0:    return VDR_Q8_0_Q8_1_MMVQ;
+#endif
         case GGML_TYPE_MXFP4:   return VDR_MXFP4_Q8_1_MMVQ;
         case GGML_TYPE_NVFP4:   return VDR_NVFP4_Q8_1_MMVQ;
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600 // sm_60-only build (GGML_CUDA_MMVQ_PASCAL is defined below)
+        case GGML_TYPE_Q2_K:    return VDR_Q2_K_Q8_1_MMVQ_P100;
+        case GGML_TYPE_Q3_K:    return VDR_Q3_K_Q8_1_MMVQ_P100;
+#else
         case GGML_TYPE_Q2_K:    return VDR_Q2_K_Q8_1_MMVQ;
         case GGML_TYPE_Q3_K:    return VDR_Q3_K_Q8_1_MMVQ;
+#endif
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_Q4_K:    return VDR_Q4_K_Q8_1_MMVQ_P100;
+        case GGML_TYPE_Q5_K:    return VDR_Q5_K_Q8_1_MMVQ_P100;
+#else
         case GGML_TYPE_Q4_K:    return VDR_Q4_K_Q8_1_MMVQ;
         case GGML_TYPE_Q5_K:    return VDR_Q5_K_Q8_1_MMVQ;
+#endif
         case GGML_TYPE_Q6_K:    return VDR_Q6_K_Q8_1_MMVQ;
         case GGML_TYPE_IQ2_XXS: return VDR_IQ2_XXS_Q8_1_MMVQ;
         case GGML_TYPE_IQ2_XS:  return VDR_IQ2_XS_Q8_1_MMVQ;
         case GGML_TYPE_IQ2_S:   return VDR_IQ2_S_Q8_1_MMVQ;
         case GGML_TYPE_IQ3_XXS: return VDR_IQ3_XXS_Q8_1_MMVQ;
         case GGML_TYPE_IQ3_S:   return VDR_IQ3_S_Q8_1_MMVQ;
+        // P100: one lane per block (vdr = qi), aligned loads + funnel shift (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_IQ4_NL:  return VDR_IQ4_NL_Q8_1_MMVQ_P100;
+#else
         case GGML_TYPE_IQ4_NL:  return VDR_IQ4_NL_Q8_1_MMVQ;
+#endif
+        // P100: halves fed straight to the XMADs, fewer table PRMTs (vecdotq-p100.cuh)
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
+        case GGML_TYPE_IQ4_XS:  return VDR_IQ4_XS_Q8_1_MMVQ_P100;
+#else
         case GGML_TYPE_IQ4_XS:  return VDR_IQ4_XS_Q8_1_MMVQ;
+#endif
         default:                return 1;
     }
 }
@@ -137,12 +230,45 @@ static constexpr __host__ __device__ int get_block_byte_size(ggml_type type) {
 // carrying the tuning in the source means a plain build cannot silently miss it.
 #if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ == 600
 #define GGML_CUDA_MMVQ_PASCAL 1
+// output rows per block for q4_K/q5_K at one column (see calc_rows_per_block)
+#define P100_KQ45_ROWS 4
+#define P100_KQ45_NWARPS 1
 // warps per block for the multi-column (speculative decoding / small batch) path
 #define P100_MMVQ_NWARPS_N 4
 // output rows per block on the multi-column path: the activation is re-read by every block,
 // so its total traffic scales as 1/rows
 #define P100_MMVQ_ROWS_N   16
 // whether the multi-column path also stages the activation (it costs shared memory that rows want)
+#endif
+
+#ifdef GGML_CUDA_MMVQ_PASCAL
+// single-column geometry for the 32-value types (one lane per block, see vecdotq-p100.cuh).
+// small_m: few output rows (e.g. 512), where the grid has too few warps to hide latency.
+static constexpr __host__ __device__ bool p100_leg_type(ggml_type type) {
+    return type == GGML_TYPE_Q4_0 || type == GGML_TYPE_Q4_1 || type == GGML_TYPE_Q5_0 || type == GGML_TYPE_Q5_1 ||
+           type == GGML_TYPE_Q8_0 || type == GGML_TYPE_IQ4_NL || type == GGML_TYPE_IQ4_XS;
+}
+#define P100_LEG_SMALL_M 2048
+static constexpr __host__ __device__ int p100_leg_nwarps1(ggml_type type, bool small_m) {
+    switch (type) {
+        case GGML_TYPE_Q4_0:   return small_m ? 4 : 1;
+        case GGML_TYPE_Q5_0:   return small_m ? 4 : 1;
+        case GGML_TYPE_Q5_1:   return small_m ? 2 : 1;
+        case GGML_TYPE_IQ4_NL: return small_m ? 4 : 1;
+        case GGML_TYPE_IQ4_XS: return small_m ? 2 : 1;
+        default:               return 2; // q4_1, q8_0: measured best at the default
+    }
+}
+static constexpr __host__ __device__ int p100_leg_rows1(ggml_type type, bool small_m) {
+    switch (type) {
+        case GGML_TYPE_Q4_0:
+        case GGML_TYPE_Q5_0:
+        case GGML_TYPE_Q5_1:
+        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ4_XS: return small_m ? 2 : 4;
+        default:               return 2;
+    }
+}
 #endif
 
 enum mmvq_parameter_table_id {
@@ -501,11 +627,33 @@ static constexpr __device__ int get_mmvq_mmid_max_batch_for_device() {
 #endif
 }
 
+#ifdef GGML_CUDA_MMVQ_PASCAL
+// q2_K/q3_K single-column geometry (vecdotq-p100.cuh runs them at vdr 4 over qi 16, so one warp
+// already takes 8 blocks per trip; a second warp would make it 16 and waste 3/8 of the lanes on
+// the last trip of a K = 5120 row). small_m: few output rows, where more warps hide latency.
+static constexpr __host__ __device__ bool p100_kq23_type(ggml_type type) {
+    return type == GGML_TYPE_Q2_K || type == GGML_TYPE_Q3_K;
+}
+#define P100_KQ23_ROWS 4
+static constexpr __host__ __device__ int p100_kq23_nwarps1(bool small_m) { return small_m ? 2 : 1; }
+// rows: q2_K's activation is 3.4x its weight bytes, so 4 rows share each staged copy; q3_K
+// (2.6x, and more registers) measured best at 2
+static constexpr __host__ __device__ int p100_kq23_rows1(ggml_type type, bool small_m) {
+    return small_m ? 2 : (type == GGML_TYPE_Q2_K ? P100_KQ23_ROWS : 2);
+}
+#endif
+
 static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_dst, mmvq_parameter_table_id table_id, bool small_k = false, bool halve_iters = false) {
 #ifdef GGML_CUDA_MMVQ_PASCAL
     if (table_id == MMVQ_PARAMETERS_GENERIC) {
         if (ncols_dst == 1) {
-            return 2;
+            if (p100_kq23_type(type)) {
+                return p100_kq23_nwarps1(small_k);
+            }
+            if (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K) {
+                return small_k ? 4 : P100_KQ45_NWARPS; // small_k: few rows, see the dispatch
+            }
+            return p100_leg_nwarps1(type, small_k);
         }
         if (ncols_dst <= 8) {
             return P100_MMVQ_NWARPS_N;
@@ -638,12 +786,21 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
     return 1;
 }
 
-static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
+static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int table_id, bool small_k = false, int nwarps = 1,
+                                                             ggml_type type = GGML_TYPE_COUNT) {
     if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_TURING || table_id == MMVQ_PARAMETERS_GB10) {
         switch (ncols_dst) {
             case 1:
 #ifdef GGML_CUDA_MMVQ_PASCAL
-                return 2;
+                if (p100_kq23_type(type)) {
+                    return p100_kq23_rows1(type, small_k);
+                }
+                // q4_K/q5_K: the q8_1 activation is 2x/1.6x the weight bytes; more rows share each
+                // copy and its unpack (the shared-load count per weight byte is what bounds them)
+                if (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K) {
+                    return small_k ? 2 : P100_KQ45_ROWS;
+                }
+                return p100_leg_rows1(type, small_k);
 #else
                 return small_k ? nwarps : 1;
 #endif
@@ -687,7 +844,7 @@ static __global__ void mul_mat_vec_q(
     constexpr int vdr = get_vdr_mmvq(type);
     constexpr mmvq_parameter_table_id table_id = get_device_table_id();
     constexpr int nwarps = calc_nwarps(type, ncols_dst, table_id, small_k, halve_iters);
-    constexpr int rows_per_cuda_block = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps);
+    constexpr int rows_per_cuda_block = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps, type);
     // Give each warp its own output rows and let every warp walk the whole of K, instead of the
     // warps splitting K and sharing every row. The activation is re-read by every block of the
     // grid, so letting a block cover more rows divides that traffic -- and doing it this way keeps
@@ -836,12 +993,14 @@ static __global__ void mul_mat_vec_q(
     constexpr int y_stage_bytes     = y_blocks_per_warp * (int) sizeof(block_q8_1);
 #ifdef GGML_CUDA_MMVQ_PASCAL
     // One column, staged per warp: each warp walks its own slice of K.
-    constexpr bool stage_y_warp  = ncols_dst == 1 && y_stage_bytes <= 2048;
+    // q2_K/q3_K at vdr 4 need 2304 bytes (8 blocks x 8 q8_1); measured worth keeping staged.
+    constexpr int  y_stage_max   = (type == GGML_TYPE_Q2_K || type == GGML_TYPE_Q3_K) ? 2304 : 2048;
+    constexpr bool stage_y_warp  = ncols_dst == 1 && y_stage_bytes <= y_stage_max;
     // Several columns, staged once for the whole block: with split_rows every warp walks the same
     // K, so a single copy serves them all. The activation is 44% of this kernel and its main
     // register consumer (removing it takes REG 168 -> 71), and at this geometry occupancy is capped
     // by registers rather than shared memory, so the stage is effectively free.
-    constexpr bool stage_y_block = split_rows && y_stage_bytes <= 2048;
+    constexpr bool stage_y_block = split_rows && y_stage_bytes <= y_stage_max;
     constexpr bool stage_y       = stage_y_warp || stage_y_block;
     constexpr int  y_slots       = stage_y_block ? ncols_dst : nwarps;
 #else
@@ -1245,7 +1404,7 @@ static std::pair<dim3, dim3> calc_launch_params(
         const int ncols_dst, const int nrows_x, const int nchannels_dst, const int nsamples_or_ntokens,
         const int warp_size, const mmvq_parameter_table_id table_id, const bool small_k = false, const bool halve_iters = false) {
     const int nwarps = calc_nwarps(type, ncols_dst, table_id, small_k, halve_iters);
-    const int rpb = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps);
+    const int rpb = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps, type);
     const int64_t nblocks = (nrows_x + rpb - 1) / rpb;
     const dim3 block_nums(nblocks, nchannels_dst, nsamples_or_ntokens);
     const dim3 block_dims(warp_size, nwarps, 1);
@@ -1381,6 +1540,12 @@ static void mul_mat_vec_q_switch_ncols_dst(
                 GGML_CUDA_CC_IS_RDNA(cc)) {
             use = false;
         }
+#ifdef GGML_CUDA_MMVQ_PASCAL
+        // the 32-value types use small_k on the single-column path to mean "few rows" instead
+        if (c_ncols_dst == 1 && (p100_leg_type(type) || p100_kq23_type(type) || type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K)) {
+            use = nrows_x < P100_LEG_SMALL_M;
+        }
+#endif
 
         return use;
     };

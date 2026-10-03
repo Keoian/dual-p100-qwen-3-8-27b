@@ -9169,3 +9169,48 @@ gate corpus: PPL 3.9476 integer vs 3.9452 fp16, wall time 2:20 -> 1:49.
 tg256 on that file: 27.12 t/s (Q6_K 32.43). The single-column q5_K path is upstream's (vec_dot_q5_K,
 emulated dp4a, mins via extra dp4a); q6_K's was hand-tuned. Open.
 
+## 281 — Pascal single-column integer dot products for every other type (vecdotq-p100.cuh): kept
+
+Three subagents, one per type family, taking turns on the GPU under a lock
+(/mnt/fast/p100-scratch/mc/lock.sh). New `vec_dot_<t>_q8_1_p100` functions live in
+`vecdotq-p100.cuh`, which only mmvq.cu includes. The sm_60-only dispatch is in mmvq.cu, with per-type
+geometry helpers: `p100_leg_*`, `p100_kq23_*` and `P100_KQ45_*`. q6_K's geometry and dot product are
+unchanged.
+
+Single column, 8704x5120, us (before -> after, GB/s after):
+
+    q4_0 72.6->55.5 (452)   q4_1 72.9->61.1 (457)   q5_0 98.9->70.9 (432)   q5_1 97.0->69.4 (482)
+    q8_0 112.5->97.8 (485)  iq4_nl 85.0->64.4 (389) iq4_xs 76.9->64.9 (366)
+    q2_K 114.9->62.0 (236)  q3_K 117.1->71.1 (269)  q4_K 101.4->64.0 (392)  q5_K 111.9->77.1 (397)
+
+The integer multi-column path (2..8) got faster too. fp16 crossovers re-measured afterwards:
+q2_K >= 3, q4_K/q5_K >= 4, q3_K >= 5; the rest only above 8.
+The integer sums are exact. The float grouping changed for all types except iq4_xs.
+
+Gates (2026-10-02 night):
+- Q6_K tg256 ABAB new/release: 32.36/32.03, 31.78/31.53. PPL 2.6101. FA eval 3/3.
+- Q6_K KLD vs release at -ub 1 and -ub 5: mean 0, max 0.000053. The release against its own base
+  reads the same max (the base's storage floor), so the solo path is identical.
+- All-types model (scratch/quants/Qwen3.8-27B-zoo-rq.gguf: Q5_K_M base with layers {2..11}+{0,16,32}
+  in q4_0 q4_1 q5_0 q5_1 q8_0 iq4_nl iq4_xs q2_K q3_K q4_K), new vs release, 1 chunk:
+  -ub 1: KLD 0.003334, PPL ratio 0.9981 ± 0.0019, same top 96.6%.
+  -ub 5: KLD 0.003234, PPL ratio 1.0010 ± 0.0018, same top 96.9%.
+  These are float-reordering differences; PPL is unchanged within error.
+- Full op suite (10-03 rerun, cold cards): 16521/16521, 3/3 backends; same run tg256 32.70 ± 0.16,
+  PPL 2.6101.
+
+Not yet measured: Q5_K_M tg256 and MTP speed after the tuning (27.12 t/s before).
+Round 2 candidates:
+- The shared mmvq staging loop recomputes each row's address every trip (~25-30 instr/row; helps
+  every type).
+- Prefetch or double-buffer the stage (q2_K/q3_K bound there).
+- The iq4 lookup (10 PRMT per 8 weights).
+- Hand-scheduled multi-column kernel for q4_K/q5_K.
+
+Committed as six pieces on goal/multi-agent (10-03):
+1. mmvq-f16 6..16 columns.
+2. The norm+gate alias fix.
+3. The GDN gather fix.
+4. Sized streams + server.
+5. The generic fp16 kernel (280).
+6. The Pascal dot products (281).
