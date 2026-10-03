@@ -3,7 +3,9 @@
 
 #include <unordered_map>
 
-// q6_K x f32 matvec for 2..5 columns on Pascal, in fp16 with short chains folded into fp32.
+// q6_K x f32 matvec for 2..16 columns on Pascal, in fp16 with short chains folded into fp32.
+// 2..5 columns are one speculative sequence's verify; 6..16 are several sequences verified together
+// (parallel server slots). Wider than MMVQ_F16_MAXK, the columns run as two launches.
 //
 // The integer path (mmvq.cu) is ALU-bound here: sm_60 has no DP4A, and its emulation costs ~2.2
 // instructions per multiply-add. This path converts each weight pair to fp16 once (PRMT, HSUB2,
@@ -25,6 +27,35 @@
 #define MMVQ_F16_RPW 4   // rows per warp
 #define MMVQ_F16_NBF 4   // q6_K blocks per window (fold)
 static constexpr int MMVQ_F16_WIN = MMVQ_F16_NBF*256;
+#define MMVQ_F16_MAXK 12 // widest single launch: wider, the 4-row tile runs out of registers
+
+// Columns are independent (each one's arithmetic never touches another's), so splitting a batch into
+// launches over column ranges gives the same results.
+template <typename F>
+static void mmvq_f16_columns(const int64_t ncols, F && f) {
+    const int64_t n0 = ncols <= MMVQ_F16_MAXK ? ncols : (ncols + 1)/2;
+    for (int64_t c0 = 0; c0 < ncols; c0 += n0) {
+        f(c0, std::min(n0, ncols - c0));
+    }
+}
+
+template <typename F>
+static void mmvq_f16_nc(const int64_t nc, F && f) {
+    switch (nc) {
+        case 2:  f(std::integral_constant<int, 2>{});  break;
+        case 3:  f(std::integral_constant<int, 3>{});  break;
+        case 4:  f(std::integral_constant<int, 4>{});  break;
+        case 5:  f(std::integral_constant<int, 5>{});  break;
+        case 6:  f(std::integral_constant<int, 6>{});  break;
+        case 7:  f(std::integral_constant<int, 7>{});  break;
+        case 8:  f(std::integral_constant<int, 8>{});  break;
+        case 9:  f(std::integral_constant<int, 9>{});  break;
+        case 10: f(std::integral_constant<int, 10>{}); break;
+        case 11: f(std::integral_constant<int, 11>{}); break;
+        case 12: f(std::integral_constant<int, 12>{}); break;
+        default: GGML_ABORT("mmvq_f16: %d columns", (int) nc);
+    }
+}
 
 // one warp per (window, column)
 static __global__ void mmvq_f16_prep(const float * __restrict__ X, const int64_t sx, __half * __restrict__ XS,
@@ -393,12 +424,15 @@ bool ggml_cuda_mmvq_f16_gdn_gate(ggml_backend_cuda_context & ctx, const ggml_ten
     const dim3 bdk(WARP_SIZE, 4);
     cudaStream_t stream = ctx.stream();
     const int64_t rbytes = mm_a->src[0]->nb[1];
-    switch (ncols) {
-        case 2:  mmvq_f16_q6_K<2, 1, 4, true, 3, true><<<g_blocks, bdk, 0, stream>>>(W, rbytes, xs_ptr, sc_ptr, Y, ra, (int) (ra + rb), (int) K, g); break;
-        case 3:  mmvq_f16_q6_K<3, 1, 4, true, 3, true><<<g_blocks, bdk, 0, stream>>>(W, rbytes, xs_ptr, sc_ptr, Y, ra, (int) (ra + rb), (int) K, g); break;
-        case 4:  mmvq_f16_q6_K<4, 1, 4, true, 3, true><<<g_blocks, bdk, 0, stream>>>(W, rbytes, xs_ptr, sc_ptr, Y, ra, (int) (ra + rb), (int) K, g); break;
-        default: mmvq_f16_q6_K<5, 1, 4, true, 3, true><<<g_blocks, bdk, 0, stream>>>(W, rbytes, xs_ptr, sc_ptr, Y, ra, (int) (ra + rb), (int) K, g); break;
-    }
+    const int nw = (int) ((K + MMVQ_F16_WIN - 1)/MMVQ_F16_WIN);
+    mmvq_f16_columns(ncols, [&](const int64_t c0, const int64_t n) {
+        mmvq_f16_gate gc = g;
+        gc.Y2 = g.Y2 + c0*rb;
+        mmvq_f16_nc(n, [&](auto nc) {
+            constexpr int NC = decltype(nc)::value;
+            mmvq_f16_q6_K<NC, 1, 4, true, 3, true><<<g_blocks, bdk, 0, stream>>>(W, rbytes, xs_ptr + c0*K, sc_ptr + c0*nw, Y + c0*ra, ra, (int) (ra + rb), (int) K, gc);
+        });
+    });
     CUDA_CHECK(cudaGetLastError());
     return true;
 }
@@ -427,18 +461,19 @@ bool ggml_cuda_mmvq_f16_glu(ggml_backend_cuda_context & ctx, const ggml_tensor *
     float * Y = (float *) dst->data;
     const int64_t sy = dst->nb[1]/sizeof(float);
     constexpr int ORW = MMVQ_F16_RPW/2;
-    const int nblk = (int) ((rows + MMVQ_F16_NW*ORW - 1)/(MMVQ_F16_NW*ORW));
-    const dim3 bdk(WARP_SIZE, MMVQ_F16_NW);
     cudaStream_t stream = ctx.stream();
     const int64_t rb = wg->nb[1];
-#define GLU_LAUNCH(NC) mmvq_f16_q6_K<NC, MMVQ_F16_RPW, MMVQ_F16_NW, false, 6, false, true><<<nblk, bdk, 0, stream>>>(W, rb, xs_ptr, sc_ptr, Y, sy, (int) rows, (int) K, g)
-    switch (ncols) {
-        case 2:  GLU_LAUNCH(2); break;
-        case 3:  GLU_LAUNCH(3); break;
-        case 4:  GLU_LAUNCH(4); break;
-        default: GLU_LAUNCH(5); break;
-    }
-#undef GLU_LAUNCH
+    const int nw = (int) ((K + MMVQ_F16_WIN - 1)/MMVQ_F16_WIN);
+    mmvq_f16_columns(ncols, [&](const int64_t c0, const int64_t n) {
+        mmvq_f16_nc(n, [&](auto nc) {
+            constexpr int NC = decltype(nc)::value;
+            // more than 5 columns: one warp per block, 8 blocks per SM (the 2-warp tile's 168 registers spill)
+            constexpr int NWT = NC <= 5 ? MMVQ_F16_NW : 1, MINB = NC <= 5 ? 6 : 8;
+            const int nblk = (int) ((rows + NWT*ORW - 1)/(NWT*ORW));
+            mmvq_f16_q6_K<NC, MMVQ_F16_RPW, NWT, false, MINB, false, true><<<nblk, dim3(WARP_SIZE, NWT), 0, stream>>>(
+                W, rb, xs_ptr + c0*K, sc_ptr + c0*nw, Y + c0*sy, sy, (int) rows, (int) K, g);
+        });
+    });
     CUDA_CHECK(cudaGetLastError());
     return true;
 }
@@ -454,7 +489,7 @@ static bool mmvq_f16_shape_ok(const ggml_tensor * src0, const ggml_tensor * src1
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
     const int64_t K = src0->ne[0], rows = src0->ne[1];
     return !(!enabled || cc >= GGML_CUDA_CC_VOLTA || GGML_CUDA_CC_IS_AMD(cc) || src0->type != GGML_TYPE_Q6_K ||
-            src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32 || ncols < 2 || ncols > 5 ||
+            src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32 || ncols < 2 || ncols > MMVQ_F16_MAX_COLS ||
             K % 512 != 0 || rows < min_rows || src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[2] != 1 || src1->ne[3] != 1 ||
             src0->nb[1] != (size_t) (K/256)*210 || src1->nb[0] != sizeof(float) || dst->nb[0] != sizeof(float) ||
             (src1->nb[1] % 16) != 0 || ((uintptr_t) src1->data % 16) != 0 || ((uintptr_t) src0->data % 4) != 0);
@@ -518,6 +553,7 @@ bool ggml_cuda_mmvq_f16_try(ggml_backend_cuda_context & ctx, const ggml_tensor *
     float * Y = (float *) dst->data;
     // big matrices: 2 warps x 4 rows per block; mid-size: 1 row per warp; small (< 256 rows): the 4
     // warps of a block split K over one row, so there are enough blocks and warps to cover the GPU
+    int64_t c0 = 0, nc = ncols; // the column range of the current launch
     auto launch = [&](auto rpw, auto nwt, auto ks, auto minb) {
         constexpr int  RPW  = decltype(rpw)::value;
         constexpr int  NWT  = decltype(nwt)::value;
@@ -525,14 +561,28 @@ bool ggml_cuda_mmvq_f16_try(ggml_backend_cuda_context & ctx, const ggml_tensor *
         constexpr int  MINB = decltype(minb)::value;
         const dim3 bdk(WARP_SIZE, NWT);
         const int g = KS ? (int) ((rows + RPW - 1)/RPW) : (int) ((rows + NWT*RPW - 1)/(NWT*RPW));
-        switch (ncols) {
-            case 2:  mmvq_f16_q6_K<2, RPW, NWT, KS, MINB><<<g, bdk, 0, stream>>>(W, src0->nb[1], xs_ptr, sc_ptr, Y, sy, (int) rows, (int) K); break;
-            case 3:  mmvq_f16_q6_K<3, RPW, NWT, KS, MINB><<<g, bdk, 0, stream>>>(W, src0->nb[1], xs_ptr, sc_ptr, Y, sy, (int) rows, (int) K); break;
-            case 4:  mmvq_f16_q6_K<4, RPW, NWT, KS, MINB><<<g, bdk, 0, stream>>>(W, src0->nb[1], xs_ptr, sc_ptr, Y, sy, (int) rows, (int) K); break;
-            default: mmvq_f16_q6_K<5, RPW, NWT, KS, MINB><<<g, bdk, 0, stream>>>(W, src0->nb[1], xs_ptr, sc_ptr, Y, sy, (int) rows, (int) K); break;
-        }
+        mmvq_f16_nc(nc, [&](auto ncc) {
+            constexpr int NC = decltype(ncc)::value;
+            mmvq_f16_q6_K<NC, RPW, NWT, KS, MINB><<<g, bdk, 0, stream>>>(W, src0->nb[1], xs_ptr + c0*K, sc_ptr + c0*nw, Y + c0*sy, sy, (int) rows, (int) K);
+        });
     };
     using I = std::integral_constant<int, 1>;
+    mmvq_f16_columns(ncols, [&](const int64_t c0_, const int64_t n_) {
+    c0 = c0_;
+    nc = n_;
+    if (nc > 5) {
+        // several sequences' verify: 6..12 columns per launch. The 2-warp tiles' 168 registers spill
+        // here; one warp per block with up to 255 registers does not (8704x5120 at 10 columns: 213 us
+        // against 367 for the 2-warp tile, which spills, and ~300 for 2-row tiles).
+        if (rows >= 3072) {
+            launch(std::integral_constant<int, MMVQ_F16_RPW>{}, I{}, std::false_type{}, std::integral_constant<int, 8>{});
+        } else if (rows >= 256) {
+            launch(std::integral_constant<int, 2>{}, I{}, std::false_type{}, std::integral_constant<int, 12>{});
+        } else {
+            launch(I{}, std::integral_constant<int, 4>{}, std::true_type{}, std::integral_constant<int, 3>{});
+        }
+        return;
+    }
     if (rows >= 3072) {
         // 6 or 7 blocks per SM (168 or 128 registers): take 7 when it needs fewer waves over the
         // SMs (3072 rows: 2 -> 1 wave, 49 vs 57 us at 5 columns; 6144: 3 -> 2; 8704: 4 -> 3).
@@ -558,6 +608,7 @@ bool ggml_cuda_mmvq_f16_try(ggml_backend_cuda_context & ctx, const ggml_tensor *
     } else {
         launch(I{}, std::integral_constant<int, 4>{}, std::true_type{}, std::integral_constant<int, 3>{});
     }
+    });
     CUDA_CHECK(cudaGetLastError());
     return true;
 }

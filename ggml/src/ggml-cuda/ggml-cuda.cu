@@ -2185,6 +2185,11 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
         return;
     }
+    // Pascal: 9..16 columns (parallel slots' verify batches together) on the fp16 matvec, not MMQ,
+    // which without DP4A takes ~4x as long (a 10-token pass: 398 ms vs 93 at 8 tokens)
+    if (ne11 > MMVQ_MAX_BATCH_SIZE && ggml_cuda_mmvq_f16_try(ctx, src0, src1, dst, ne11)) {
+        return;
+    }
     if (ggml_cuda_should_use_mmq(src0->type, cc, ne11, /*n_experts =*/ 0)) {
         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
         return;
@@ -4819,7 +4824,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     // The FFN's gate and up matvecs and their SWIGLU, in one launch (verify widths, fp16 path):
     //   MUL_MAT(up) -> MUL_MAT(gate) -> GLU(SWIGLU, gate, up), in either matvec order, views between.
     if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_Q6_K && node->ne[0] >= 3072 &&
-            node->ne[1] >= 2 && node->ne[1] <= 5) {
+            node->ne[1] >= 2 && node->ne[1] <= MMVQ_F16_MAX_COLS) {
         const int n = cgraph->n_nodes;
         auto next = [&](int j) {
             for (++j; j < n; ++j) {

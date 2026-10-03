@@ -9078,3 +9078,39 @@ staircase's 32k-token requests set it, flat from 32k to 260k).
 Questions at 260k in this staircase prefill at 111-141 t/s (hot, after checkpoint restore) against
 ~153 for the restore-mode 1479-token question; the 09-26 release showed the same gap (100 vs 120).
 My earlier 18.5 min fill estimate (272) was low; measured 24.9.
+
+## 275 — parallel agents: goal and first measurements (2026-10-02)
+
+Goal from the user: one manager agent at 262k (mostly idle) and up to two worker agents at ~64k
+each, sharing the weights; two decode at once; 40-50 t/s per agent with MTP; solo unchanged. Workers
+are spawned and killed, so their KV should exist only while they do.
+
+Per-pass cost by batch width before any change (llama-batched-bench, 512-token prompts, pass ms):
+B1 31.3, B5 54.9, B6 72.2, B8 93.2, **B10 398**, B15 457. Past 8 columns q6_K left the fp16 matvec
+for MMQ, which without DP4A is ~4x slower; 6..8 ran the integer mmvq. Two agents x (1 + 4 drafts)
+= 10 columns, so two agents with MTP were slower in total than one.
+
+## 276 — fp16 q6_K matvec for 6..16 columns (mmvq-f16.cu): kept
+
+The 2-5 column kernel extended: 6..12 columns per launch with 4 rows x 1 warp x 8 blocks/SM (the
+2-warp tile's 168 registers spill past 8 columns: 8704x5120 at 10 columns 367 us -> 213), wider
+batches split into two launches over column halves (columns are independent: identical results).
+9..16 columns route here instead of MMQ (ggml-cuda.cu), the fused FFN gate/up/SWIGLU and GDN gate
+take up to 16. NC 2..5 keep their exact kernels. Harness sweep (mmvq-harness, 8704x5120, us):
+
+| cfg (rows x warps x blocks/SM) | n=6 | 8 | 10 | 12 | 14 | 16 |
+|---|---|---|---|---|---|---|
+| 4x2x6 (2..5 col config) | 145 | 181 | 367 | 609 | 919 | 1648 |
+| 4x1x8 (kept, <=12) | 147 | 172 | 213 | 245 | 317 | 443 |
+| 2x4x3 | 178 | 224 | 278 | 328 | 369 | 554 |
+
+Whole model (batched-bench, pass ms): B8 93 -> 77, B10 398 -> 92, B12 -> 108, B15 457 -> 149.
+Shared-memory activation staging (all warps of a block share x) was slower (n=8 270 us): the
+per-column cost is not L2. HFMA2 runs at full rate here (64 lanes/clk/SM microbench); the kernel
+reaches ~1/3 of it per added column. Eval: new q6_K cases at 6..16 columns for 8704/6150/3072/
+512/300/24/20 rows, GLU fusion 6/10/13/16, GDN gate 8/10/16: all pass.
+
+Server, 2 slots (-np 2, 131k each), MTP, short prompts: 37-45 t/s per agent (solo 67-72 on the same
+prompts); 3 slots 20-29 each. Greedy output with a second request in flight matches solo for 1073
+of 1178 chars, then rounding drift; both coherent.
+

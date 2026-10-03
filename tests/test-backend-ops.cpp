@@ -10008,7 +10008,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_add_rms_norm_mul({n, r}));
         }
     }
-    for (int64_t n : {1, 2, 3, 5}) {
+    for (int64_t n : {1, 2, 3, 5, 8, 10, 16}) {
         test_cases.emplace_back(new test_gdn_gate(24, n, 5120));
         test_cases.emplace_back(new test_gdn_gate(20, n, 3072));
     }
@@ -11133,6 +11133,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
         test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q6_K, GGML_TYPE_F32, m, 5, 8704, {1, 1}, {1, 1}));
     }
+    // several parallel sequences verified together: 6..12 columns per launch, wider ones split in two
+    // (13 -> 7 + 6, 16 -> 8 + 8); 9..16 would otherwise take MMQ
+    for (int m : {8704, 6150, 3072, 512, 300, 24, 20}) {
+        for (int n : {6, 8, 10, 12, 13, 16}) {
+            test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q6_K, GGML_TYPE_F32, m, n, 5120, {1, 1}, {1, 1}));
+        }
+    }
+    for (int n : {10, 16}) {
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q6_K, GGML_TYPE_F32, 5120, n, 8704, {1, 1}, {1, 1}));
+    }
 
     // the fp16-product / fp32-accumulation prefill GEMM on Pascal (gemm-fold.cu) takes >= 1024 rows
     // past the mmvq widths; 1028 rows and 130 columns leave partial tiles
@@ -11286,7 +11296,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
     // the fp16 q6_K gate+up+SWIGLU verify kernel (mmvq-f16.cu): >= 3072 rows, K a multiple of 512
-    for (int64_t m_batch : { 2, 3, 4, 5 }) {
+    for (int64_t m_batch : { 2, 3, 4, 5, 6, 10, 13, 16 }) {
         for (int64_t n_rows : { 3072, 8704 }) {
             test_cases.emplace_back(new test_mul_mat_vec_fusion(GGML_TYPE_Q6_K, GGML_GLU_OP_SWIGLU, m_batch, n_rows, 5120,
                 false, 1, 1, false, false, true, false, {1, 1}));
@@ -11692,7 +11702,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         test_cases.emplace_back(new test_add_rms_norm_mul({5120, r}));
     }
     for (auto mk : std::vector<std::pair<int, int>>{{8704, 5120}, {5120, 8704}, {5120, 5120}, {3072, 5120}, {5120, 3072}, {6144, 5120}, {512, 5120}, {24, 5120}}) {
-        for (int n : {1, 2, 3, 4, 5, 6}) {
+        for (int n : {1, 2, 3, 4, 5, 6, 8, 10, 12, 15}) {
             test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q6_K, GGML_TYPE_F32, mk.first, n, mk.second, {1, 1}, {1, 1}));
         }
     }
