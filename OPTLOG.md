@@ -9199,7 +9199,14 @@ Gates (2026-10-02 night):
 - Full op suite (10-03 rerun, cold cards): 16521/16521, 3/3 backends; same run tg256 32.70 ± 0.16,
   PPL 2.6101.
 
-Not yet measured: Q5_K_M tg256 and MTP speed after the tuning (27.12 t/s before).
+Q5_K_M (requantized fixture) after 280+281, 10-03, warm cards, ABBA against the 10-01 release:
+| | release | this build |
+|---|---|---|
+| tg256 | 27.03 / 26.70 | 33.78 / 33.27 (+25%; Q6_K reads 32.70) |
+| MTP decode (n-max 4, p-min 0.2, quicksort prompt) | 51.98 / 51.93 | 67.67 / 67.43 (+30%), accept 87.1% |
+Q6_K on the same MTP prompt: 81.39 (accept 85.2%). Q5_K_M now decodes faster than Q6_K but verifies
+slower: 5 columns of q5_K run the generic fp16 kernel, q6_K its hand-scheduled one. That gap is the
+round-2 target below (hand-scheduled multi-column q4_K/q5_K).
 Round 2 candidates:
 - The shared mmvq staging loop recomputes each row's address every trip (~25-30 instr/row; helps
   every type).
