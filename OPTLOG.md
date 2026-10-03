@@ -9221,3 +9221,33 @@ Committed as six pieces on goal/multi-agent (10-03):
 4. Sized streams + server.
 5. The generic fp16 kernel (280).
 6. The Pascal dot products (281).
+
+## 282 — every quant's fp16 multi-column kernel hand-scheduled + integer staging loop hoisted: kept
+
+10 Sonnet agents in parallel (all stopped at the account's usage limit; the lead harvested their last
+kernel files). New fast loop: /mnt/fast/p100-scratch/hx (hx.cu harness for any type: ggml-quantized
+random weights, double reference, NMSE, median µs, output checksum; ~1 min build, seconds per run;
+per-GPU locks). Merged into mmvq-f16.cu: dedicated kernels for q5_K, q4_K, q2_K/q3_K, q4_0/q8_0, q4_1
+(+q5_1 from 8 columns), iq4_nl/iq4_xs, mxfp4, and new fp16 support for iq2_xxs/xs/s, iq3_xxs/s,
+iq1_s/m. Routing per type from data (`mmvq_f16_gen_takes`): 1 column always integer; fp16 from 2
+columns for q2_K/q4_K/q5_K/mxfp4, from 3 for q3_K/q8_0, 2-3 for q4_0, above 8 for the rest.
+mmvq.cu: the staging loop's per-row address math is computed once (agent stg); output bit-identical.
+
+Harness, 8704x5120 µs, before → after (fp16 kernel):
+| type | n=1 | n=2 | n=5 | n=8 | n=16 |
+|---|---|---|---|---|---|
+| q5_K | 126 → 68 | 142 → 78 | 175 → 129 | 253 → 196 | 502 → 390 |
+| q4_K | 113 → 57 | 122 → 61 | 185 → 119 | 244 → 196 | 482 → 390 |
+| q2_K | 76 → 58 | 96 → 67 | 145 → 107 | 214 → 152 | 429 → 305 |
+| q3_K | 110 → 73 | 135 → 91 | 151 → 130 | 235 → 187 | 476 → 372 |
+| q8_0 | 110 → 101 | 115 → 105 | 216 → 162 | 240 → 236 | 480 → 469 |
+Integer n=1 (staging hoist): q6_K 82.5 → 79.9 (5120x8704), q5_K 77.1 → 73.6, q4_K 64.0 → 61.5,
+q3_K 73.5 → 69.4, iq4_xs 66.3 → 61.7 (8704x5120).
+Q5_K_M (requantized fixture): tg256 33.5 → 33.98; MTP decode 67.5 → 78.4 t/s (accept 87.1%; Q6_K 81.4).
+Checks: MUL_MAT eval for the new shapes 200/200, MUL_MAT_VEC_FUSION 1338/1338; Q6_K KLD vs the 10-01
+release at -ub 1: mean 0, max 0.000053 (storage floor) = identical; zoo (q4_0..q4_K layers on Q5_K_M)
+-ub 5 vs release: KLD 0.003254, ln PPL ratio 0.0007 ± 0.0018 (the previous build read 0.003234).
+Gate: tg256 32.39 ± 0.19 (warm cards, 59 C), PPL 2.6101, full suite 16658/16658.
+Not done: integer single-column ports for iq2/iq3/iq1/mxfp4 (agents stopped first; stock integer
+path there), whole-model KLD for zoo2 (iq3/iq2_s/iq1_m/mxfp4 layers, baked at
+/mnt/fast/p100-scratch/quants), the agents' sweep macros left at defaults in mmvq-f16.cu.

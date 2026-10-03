@@ -11308,8 +11308,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // columns, a partial row block (4100), K not a multiple of the 1024-value window (5376), and the
     // fused gate+up+SWIGLU
     for (ggml_type t : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0, GGML_TYPE_IQ4_NL,
-                        GGML_TYPE_IQ4_XS, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}) {
-        for (int n : {2, 3, 5, 8, 10, 16}) {
+                        GGML_TYPE_IQ4_XS, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K,
+                        GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S,
+                        GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M, GGML_TYPE_MXFP4}) {
+        for (int n : {2, 3, 4, 5, 8, 9, 10, 13, 16}) {
             test_cases.emplace_back(new test_mul_mat(t, GGML_TYPE_F32, 4100, n, 5376, {1, 1}, {1, 1}));
         }
         test_cases.emplace_back(new test_mul_mat(t, GGML_TYPE_F32, 300, 4, 3072, {1, 1}, {1, 1}));
@@ -11737,7 +11739,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     // The same pass for every other weight type (mmvq-f16.cu's generic kernel against the integer
     // path: GGML_CUDA_MMVQ_F16=0)
     for (ggml_type t : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0, GGML_TYPE_IQ4_NL,
-                        GGML_TYPE_IQ4_XS, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}) {
+                        GGML_TYPE_IQ4_XS, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K,
+                        GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S,
+                        GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M, GGML_TYPE_MXFP4}) {
         for (auto mk : std::vector<std::pair<int, int>>{{8704, 5120}, {5120, 8704}, {6144, 5120}, {512, 5120}, {24, 5120}}) {
             for (int n : {1, 2, 3, 4, 5, 6, 8, 10, 16}) {
                 test_cases.emplace_back(new test_mul_mat(t, GGML_TYPE_F32, mk.first, n, mk.second, {1, 1}, {1, 1}));
