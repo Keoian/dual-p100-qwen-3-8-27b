@@ -2423,7 +2423,15 @@ static mmvq_f16_q5_K_cfg mmvq_f16_q5_K_pick(const int nc, const int64_t rows, co
     if (glu) { return { K5_G_RPW, K5_G_NWT, 0, K5_G_MINB }; }
     return { K5_F_RPW, K5_F_NWT, K5_F_KS, K5_F_MINB };
 #else
-    return { 4, 2, 0, 6 };
+    // from the k5s sweep (hx harness, us): the 2-warp tile spills past 8 columns (8704x5120 at 10:
+    // 314 -> 239 with 4x1x8); small row counts want fewer rows per warp, and a K-split below 256 rows
+    if (rows < 256) {
+        return glu ? mmvq_f16_q5_K_cfg{ 2, 1, 0, 16 } : mmvq_f16_q5_K_cfg{ 1, 4, 1, 3 };
+    }
+    if (rows < 1024) {
+        return nc <= 5 ? mmvq_f16_q5_K_cfg{ 2, 2, 0, 8 } : mmvq_f16_q5_K_cfg{ 2, 1, 0, 16 };
+    }
+    return nc <= 2 ? mmvq_f16_q5_K_cfg{ 4, 2, 0, 6 } : mmvq_f16_q5_K_cfg{ 4, 1, 0, 8 };
 #endif
 }
 
@@ -2446,7 +2454,10 @@ static void mmvq_f16_q5_K_run(const mmvq_f16_q5_K_cfg c, const uint8_t * W, cons
 #ifdef K5_FORCE
     if constexpr (GLU) { K5T(K5_G_RPW, K5_G_NWT, 0, K5_G_MINB); } else { K5T(K5_F_RPW, K5_F_NWT, K5_F_KS, K5_F_MINB); }
 #else
-    K5T(4, 2, 0, 6);
+    if constexpr (!GLU) {
+        if (K5T(1, 4, 1, 3)) { return; }
+    }
+    K5T(4, 2, 0, 6) || K5T(4, 1, 0, 8) || K5T(2, 2, 0, 8) || K5T(2, 1, 0, 16);
 #endif
 #undef K5T
 }
@@ -2699,7 +2710,7 @@ static void mmvq_f16_gen_launch(const ggml_type type, const uint8_t * W, const u
     // The dedicated kernels lose to the generic one on small matrices at 5+ columns (512 rows), and
     // the iq4 kernel at 8 columns per launch (15..16 columns); those keep the generic kernel.
     const bool small_wide = rows < 1024 && ncols >= 5;
-    if (type == GGML_TYPE_Q5_K && !small_wide && mmvq_f16_q5_K_launch(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream)) {
+    if (type == GGML_TYPE_Q5_K && mmvq_f16_q5_K_launch(W, W2, row_bytes, xs, sc, Y, sy, rows, K, ncols, glu, stream)) {
         return;
     }
     if (type == GGML_TYPE_Q4_K && !small_wide) {
