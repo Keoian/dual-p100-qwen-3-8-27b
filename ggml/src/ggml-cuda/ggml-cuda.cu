@@ -2186,8 +2186,11 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         return;
     }
     // Pascal: 9..16 columns (parallel slots' verify batches together) on the fp16 matvec, not MMQ,
-    // which without DP4A takes ~4x as long (a 10-token pass: 398 ms vs 93 at 8 tokens)
-    if (ne11 > MMVQ_MAX_BATCH_SIZE && ggml_cuda_mmvq_f16_try(ctx, src0, src1, dst, ne11)) {
+    // which without DP4A takes ~4x as long (a 10-token pass: 398 ms vs 93 at 8 tokens). Not for matrices
+    // the GEMM path computes in fp32 (fewer than GGML_CUDA_GEMM_FOLD_MINROWS rows): there the fp16 matvec
+    // (NMSE ~5e-7) would be less exact than what it replaces (~1e-14).
+    if (ne11 > MMVQ_MAX_BATCH_SIZE && !ggml_cuda_gemm_fold_wants_f32(ctx, src0, src1, dst) &&
+            ggml_cuda_mmvq_f16_try(ctx, src0, src1, dst, ne11)) {
         return;
     }
     if (ggml_cuda_should_use_mmq(src0->type, cc, ne11, /*n_experts =*/ 0)) {
