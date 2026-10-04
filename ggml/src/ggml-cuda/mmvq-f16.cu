@@ -2224,6 +2224,10 @@ static __global__ void mmvq_f16_q5_K(const uint8_t * __restrict__ W, const uint8
                                      const int64_t sy, const int rows, const int K) {
     static_assert(!GLU || (!KS && RPW % 2 == 0), "GLU: row-parallel, gate/up row pairs");
     constexpr int ORW = GLU ? RPW/2 : RPW, RPB = NWT*RPW, WB = 4*176;
+    // 7+ columns on the 4-row tile: fold each half-window's 8-HFMA2 chain into fp32 right away instead
+    // of holding NC*RPW half2 chains over the window (8704x5120 at 10 columns 234 -> 205 us, NMSE
+    // 1.14e-6 -> 8.4e-7); fewer columns or rows keep the window-long chains (faster there)
+    constexpr bool FOLD = NC >= 7 && RPW == 4;
     const int lane = threadIdx.x, wid = threadIdx.y;
     const int nb = K/256, nw = (nb + 3)/4;
     const int row0 = KS ? blockIdx.x*RPW : GLU ? (blockIdx.x*NWT + wid)*ORW : blockIdx.x*RPB + wid*RPW;
@@ -2254,9 +2258,9 @@ static __global__ void mmvq_f16_q5_K(const uint8_t * __restrict__ W, const uint8
 
     for (int win = KS ? wid : 0; win < nw; win += KS ? NWT : 1) {
         const bool act = win*4 + B < nb;
-        __half2 t[NC][RPW];
+        __half2 t[FOLD ? 1 : NC][RPW];
 #pragma unroll
-        for (int c = 0; c < NC; ++c) {
+        for (int c = 0; c < (FOLD ? 1 : NC); ++c) {
 #pragma unroll
             for (int i = 0; i < RPW; ++i) {
                 t[c][i] = __float2half2_rn(0.0f);
@@ -2330,9 +2334,10 @@ static __global__ void mmvq_f16_q5_K(const uint8_t * __restrict__ W, const uint8
                     const uint4 xl = __ldg((const uint4 *) (xw[c] + 8*m)), xh = __ldg((const uint4 *) (xw[c] + 32 + 8*m));
                     const __half2 xlv[4] = { *(const __half2 *) &xl.x, *(const __half2 *) &xl.y, *(const __half2 *) &xl.z, *(const __half2 *) &xl.w };
                     const __half2 xhv[4] = { *(const __half2 *) &xh.x, *(const __half2 *) &xh.y, *(const __half2 *) &xh.z, *(const __half2 *) &xh.w };
+                    const float sw = FOLD ? __ldg(S + c*nw + win) : 0.0f;
 #pragma unroll
                     for (int i = 0; i < RPW; ++i) {
-                        __half2 u = t[c][i];
+                        __half2 u = FOLD ? __float2half2_rn(0.0f) : t[FOLD ? 0 : c][i];
 #pragma unroll
                         for (int k = 0; k < 4; ++k) {
                             u = __hfma2(wl[i][k], xlv[k], u);
@@ -2341,7 +2346,12 @@ static __global__ void mmvq_f16_q5_K(const uint8_t * __restrict__ W, const uint8
                         for (int k = 0; k < 4; ++k) {
                             u = __hfma2(wh[i][k], xhv[k], u);
                         }
-                        t[c][i] = u;
+                        if constexpr (FOLD) {
+                            const __half2 v = __hadd2(u, __lowhigh2highlow(u));
+                            acc[c][i] = fmaf(sw, __low2float(v), acc[c][i]);
+                        } else {
+                            t[c][i] = u;
+                        }
                     }
                 }
             }
@@ -2353,11 +2363,13 @@ static __global__ void mmvq_f16_q5_K(const uint8_t * __restrict__ W, const uint8
 #pragma unroll
         for (int c = 0; c < NC; ++c) {
             xw[c] += KS ? NWT*MMVQ_F16_WIN : MMVQ_F16_WIN;
-            const float s = __ldg(S + c*nw + win);
+            if constexpr (!FOLD) {
+                const float s = __ldg(S + c*nw + win);
 #pragma unroll
-            for (int i = 0; i < RPW; ++i) {
-                const __half2 u = __hadd2(t[c][i], __lowhigh2highlow(t[c][i]));
-                acc[c][i] = fmaf(s, __low2float(u), acc[c][i]);
+                for (int i = 0; i < RPW; ++i) {
+                    const __half2 u = __hadd2(t[c][i], __lowhigh2highlow(t[c][i]));
+                    acc[c][i] = fmaf(s, __low2float(u), acc[c][i]);
+                }
             }
         }
     }

@@ -9267,3 +9267,30 @@ q5_1 0.92, iq4_nl 0.98, iq4_xs 0.98, q5_0 0.99, q6_K 1.00 (unchanged).
 Gate: tg256 32.99 ± 0.15 (cold; the gate's own run read 26.50 ± 2.94 straight after four KLD
 perplexity passes), PPL 2.6101, full suite 16658/16658. KLD vs the 10-01 release: Q6_K -ub 1 mean 0
 (max 0.000053), -ub 5 mean 0 (max 0.000059) = identical; zoo -ub 1 0.003334, -ub 5 0.003442.
+
+## 284 — q5_K multi-column kernel: per-shape geometry + per-half-window fold at 7+ columns: kept
+
+Server test on the user's Q5_K_M with the 3-slot layout (--kv-slot-sizes 262144,65536,65536, qwen-server
+flags, model-card sampling temp 1.0 / top-k 20 / top-p 0.95, 512-token answers): two agents decoding
+together got 27-28 t/s each vs Q6_K's 37 (Q6_K cannot start the third slot: VRAM guard). The host only
+waits on the GPU; drafts for both slots are already one batch; the cycle is the 10-column verify pass.
+Draft n_max 2/3/4 made no difference. batched-bench B10 pass: Q5_K_M 127 ms, Q6_K 99 ms. Cause: the q5_K
+kernel ran one geometry (4 rows x 2 warps x 6 blocks/SM) at every width; past 8 columns it spilled
+(168 regs, 136-232 B stack), so q5_K at 10 columns was 344 us vs q6_K 197 (8704x5120).
+
+1. Geometry from the k5s sweep (mmvq_f16_q5_K_pick): rows < 256 K-split 1x4x3 (GLU 2x1x16); rows < 1024
+   2x2x8 up to 5 columns, 2x1x16 above; else 4x2x6 at 1-2 columns, 4x1x8 above. q5_K no longer drops to
+   the generic kernel for small rows at 5+ columns. Big shapes bit-identical (same checksums).
+   Harness, us: 8704x5120 n=10 312 -> 229, n=12 472 -> 260; 24x5120 n=10 48 -> 12; 512x5120 n=10 48 -> 27.
+   B10 pass 127 -> 100 ms. Server, two agents: 28 -> 33-35 t/s each.
+2. FOLD (NC >= 7 on the 4-row tile): each lane folds its 8-HFMA2 half-window chain into fp32 at once
+   instead of holding NC*RPW half2 chains over the whole window. Same 4x1x8 geometry (capping registers
+   lower, 10 or 12 blocks/SM, spills and loses). NMSE 1.14e-6 -> 8.4e-7 (shorter fp16 chains). Fewer
+   columns keep the window-long chains (fold was 1-5% slower there) and stay bit-identical.
+   test-backend-ops perf, us: q5_K 8704x5120 n=8 175 -> 157, n=10 215 -> 190, n=16 349 -> 315;
+   5120x8704 n=10 260 -> 224, n=16 450 -> 389. Fused gate/up n=10 459 -> 384 (harness).
+   The same fold in the q6_K kernel was ~1.5% slower (n=10 192.6 -> 195.6): reverted, q6_K untouched.
+Server, two agents: 37-38 t/s each (solo 61-63, three agents 23-25), model-card sampling.
+KLD on Q5_K_M (8 chunks, -ub 10 vs a -ub 512 base): new 0.001199 (max 0.150, top-1 98.88%), before the
+fold 0.001262 (max 0.526, top-1 98.72%). Gate: tg256 34.12 ± 0.20 (cool cards, 37/39 C; the gate's own
+run read 29.81 ± 2.96 at 71/73 C after the KLD passes), PPL 2.6101, full suite 16658/16658.
