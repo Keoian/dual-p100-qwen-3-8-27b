@@ -9137,6 +9137,7 @@ its own noise floor for 3 sequences (0.0073, same as its -ub 448). GDN_CHUNKED=0
 with several sequences one sequence's blocks can read a cache row another's blocks write. Now one
 sequence only (the copy for several is ~0.3 ms per pass). 3 sequences: KLD 0.001929, top-1 98.5%.
 
+## 280 — generic fp16 multi-column matvec for every other weight type (mmvq-f16.cu): kept
 
 One kernel (`mmvq_f16_gen`) plus an 8-weight unpack per type, written from ggml's reference
 dequantization: q4_0, q4_1, q5_0, q5_1, q8_0, iq4_nl, iq4_xs, q2_K, q3_K, q4_K, q5_K. q6_K keeps its
