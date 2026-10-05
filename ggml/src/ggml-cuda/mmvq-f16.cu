@@ -331,6 +331,150 @@ static __global__ void mmvq_f16_q6_K(const uint8_t * __restrict__ W, const int64
     }
 }
 
+// q5_K x f32 for 2..5 columns, with the q6_K kernel's numerics: the same prescaled fp16 activation
+// and per-window fp32 folds, the 5-bit quant entering as an exact half (PRMT builds 1024 + q, one
+// HSUB2 leaves q), and one rounding per weight: w = q*(d*1024*sc) - dmin*1024*m in a single HFMA2.
+// A q5_K block is 176 bytes, so every row and block is 16-byte aligned and each lane reads its quant
+// words straight from global memory (a warp's qs reads are one 128-byte line per block).
+// Lane l takes values 64*(l/8) + 4*(l%8) + {0..3} (sub-block 2*(l/8)) and the same + 32 (sub-block
+// 2*(l/8) + 1) of every block.
+template <int RPW>
+static __device__ __forceinline__ void mmvq_f16_q5_K_scales(const uint8_t * const * bw, uint32_t (*scst)[MMVQ_F16_NBF*8],
+                                                            const int nblk, const int lane) {
+    const int B = lane >> 3, j = lane & 7;
+    if (B >= nblk) {
+        return;
+    }
+#pragma unroll
+    for (int i = 0; i < RPW; ++i) {
+        const uint8_t * bb = bw[i] + 176*B;
+        const uint8_t * q  = bb + 4;
+        int sc, m;
+        if (j < 4) {
+            sc = q[j] & 63;
+            m  = q[j + 4] & 63;
+        } else {
+            sc = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);
+            m  = (q[j + 4] >>  4) | ((q[j - 0] >> 6) << 4);
+        }
+        const float2 dm = __half22float2(*(const __half2 *) bb);
+        const __half2 v = __floats2half2_rn(dm.x*1024.0f*(float) sc, -dm.y*1024.0f*(float) m);
+        scst[i][B*8 + j] = *(const uint32_t *) &v;
+    }
+}
+
+template <int NC, int RPW, int NWT, int MINB>
+__launch_bounds__(NWT*WARP_SIZE, MINB)
+static __global__ void mmvq_f16_q5_K(const uint8_t * __restrict__ W, const int64_t row_bytes, const __half * __restrict__ XS,
+                                     const float * __restrict__ S, float * __restrict__ Y, const int64_t sy,
+                                     const int rows, const int K) {
+    const int lane = threadIdx.x, wid = threadIdx.y;
+    const int nb = K/256, nw = (nb + MMVQ_F16_NBF - 1)/MMVQ_F16_NBF;
+    const int row0 = (blockIdx.x*NWT + wid)*RPW;
+    const int il = lane >> 3, p = 4*(lane & 7);
+    const int Pa = 64*il + p;                    // this lane's first value within a block
+    __shared__ uint32_t scst[NWT][RPW][MMVQ_F16_NBF*8];
+
+    float acc[NC][RPW];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+#pragma unroll
+        for (int i = 0; i < RPW; ++i) {
+            acc[c][i] = 0.0f;
+        }
+    }
+    const uint8_t * rp[RPW];
+#pragma unroll
+    for (int i = 0; i < RPW; ++i) {
+        rp[i] = W + (int64_t) min(row0 + i, rows - 1)*row_bytes;
+    }
+    const __half2 k1024 = __float2half2_rn(1024.0f);
+
+    for (int win = 0; win < nw; ++win) {
+        const int nblk = min(MMVQ_F16_NBF, nb - win*MMVQ_F16_NBF);
+        __syncwarp();
+        mmvq_f16_q5_K_scales<RPW>(rp, scst[wid], nblk, lane);
+        __syncwarp();
+        __half2 t[NC][RPW];
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+#pragma unroll
+            for (int i = 0; i < RPW; ++i) {
+                t[c][i] = __float2half2_rn(0.0f);
+            }
+        }
+#pragma unroll
+        for (int B = 0; B < MMVQ_F16_NBF; ++B) {
+            if (B >= nblk) {
+                break;
+            }
+            __half2 xa[NC][2], xb[NC][2];
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                const __half * xs = XS + (int64_t) c*K + (int64_t) win*MMVQ_F16_WIN + B*256 + Pa;
+                const uint2 a = __ldg((const uint2 *) xs), bb = __ldg((const uint2 *) (xs + 32));
+                xa[c][0] = *(const __half2 *) &a.x;  xa[c][1] = *(const __half2 *) &a.y;
+                xb[c][0] = *(const __half2 *) &bb.x; xb[c][1] = *(const __half2 *) &bb.y;
+            }
+#pragma unroll
+            for (int i = 0; i < RPW; ++i) {
+                const uint8_t * bk = rp[i] + 176*B;
+                const uint32_t vl = __ldg((const uint32_t *) (bk + 48 + 32*il + p));
+                const uint32_t vh = __ldg((const uint32_t *) (bk + 16 + p)) >> (2*il);
+                const uint32_t qa = (vl & 0x0F0F0F0F) | ((vh & 0x01010101) << 4);
+                const uint32_t qb = ((vl >> 4) & 0x0F0F0F0F) | ((vh & 0x02020202) << 3);
+                const uint32_t pA = scst[wid][i][B*8 + 2*il], pB = scst[wid][i][B*8 + 2*il + 1];
+                const __half2 sA = __low2half2(*(const __half2 *) &pA), mA = __high2half2(*(const __half2 *) &pA);
+                const __half2 sB = __low2half2(*(const __half2 *) &pB), mB = __high2half2(*(const __half2 *) &pB);
+                const uint32_t h0 = __byte_perm(qa, 0x64646464u, 0x5140), h1 = __byte_perm(qa, 0x64646464u, 0x5342);
+                const uint32_t h2 = __byte_perm(qb, 0x64646464u, 0x5140), h3 = __byte_perm(qb, 0x64646464u, 0x5342);
+                const __half2 w0 = __hfma2(__hsub2(*(const __half2 *) &h0, k1024), sA, mA);
+                const __half2 w1 = __hfma2(__hsub2(*(const __half2 *) &h1, k1024), sA, mA);
+                const __half2 w2 = __hfma2(__hsub2(*(const __half2 *) &h2, k1024), sB, mB);
+                const __half2 w3 = __hfma2(__hsub2(*(const __half2 *) &h3, k1024), sB, mB);
+#pragma unroll
+                for (int c = 0; c < NC; ++c) {
+                    __half2 u = __hfma2(w0, xa[c][0], t[c][i]);
+                    u = __hfma2(w1, xa[c][1], u);
+                    u = __hfma2(w2, xb[c][0], u);
+                    t[c][i] = __hfma2(w3, xb[c][1], u);
+                }
+            }
+        }
+#pragma unroll
+        for (int i = 0; i < RPW; ++i) {
+            rp[i] += MMVQ_F16_NBF*176;
+        }
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const float s = __ldg(S + c*nw + win);
+#pragma unroll
+            for (int i = 0; i < RPW; ++i) {
+                const __half2 u = __hadd2(t[c][i], __lowhigh2highlow(t[c][i]));
+                acc[c][i] = fmaf(s, __low2float(u), acc[c][i]);
+            }
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+        float v[RPW];
+#pragma unroll
+        for (int i = 0; i < RPW; ++i) {
+            v[i] = acc[c][i];
+#pragma unroll
+            for (int o = 16; o; o >>= 1) {
+                v[i] += __shfl_xor_sync(0xFFFFFFFF, v[i], o);
+            }
+        }
+#pragma unroll
+        for (int i = 0; i < RPW; ++i) {
+            if (lane == i && row0 + i < rows) {
+                Y[c*sy + row0 + i] = v[i];
+            }
+        }
+    }
+}
+
 // The prescaled fp16 activation, reused across consecutive matmuls that read the same src1 (gate
 // and up, the q/k/v projections), like the integer path's q8_1 cache. Keyed on the src1 node, whose
 // contents are fixed within one graph evaluation; cleared at the start of each one. One persistent
@@ -460,6 +604,26 @@ static bool mmvq_f16_shape_ok(const ggml_tensor * src0, const ggml_tensor * src1
             (src1->nb[1] % 16) != 0 || ((uintptr_t) src1->data % 16) != 0 || ((uintptr_t) src0->data % 4) != 0);
 }
 
+// q5_K: K an even number of blocks (windows of 4 or 2), rows >= 256 (row-parallel launch only).
+// GGML_CUDA_MMVQ_F16_Q5K=0 keeps q5_K on the integer path.
+bool ggml_cuda_mmvq_f16_q5_K_on() {
+    static const bool on = [] { const char * s = getenv("GGML_CUDA_MMVQ_F16_Q5K"); return !s || atoi(s) != 0; }();
+    return on;
+}
+
+static bool mmvq_f16_q5_K_shape_ok(const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst, const int64_t ncols) {
+    if (src0->type != GGML_TYPE_Q5_K || !ggml_cuda_mmvq_f16_q5_K_on()) {
+        return false;
+    }
+    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+    const int64_t K = src0->ne[0], rows = src0->ne[1];
+    return cc < GGML_CUDA_CC_VOLTA && !GGML_CUDA_CC_IS_AMD(cc) && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
+        ncols >= 2 && ncols <= 5 && K % 512 == 0 && rows >= 256 && src0->ne[2] == 1 && src0->ne[3] == 1 &&
+        src1->ne[2] == 1 && src1->ne[3] == 1 && src0->nb[1] == (size_t) (K/256)*176 && src1->nb[0] == sizeof(float) &&
+        dst->nb[0] == sizeof(float) && (src1->nb[1] % 16) == 0 && ((uintptr_t) src1->data % 16) == 0 &&
+        ((uintptr_t) src0->data % 4) == 0;
+}
+
 static void mmvq_f16_prepare(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, const int64_t ncols, const int64_t K,
                              __half ** xs_out, float ** sc_out) {
     const int nw = (int) ((K + MMVQ_F16_WIN - 1)/MMVQ_F16_WIN);
@@ -505,6 +669,25 @@ bool ggml_cuda_mmvq_f16_try(ggml_backend_cuda_context & ctx, const ggml_tensor *
     // Where it measured faster than the integer path (OPTLOG 206), test-backend-ops at 5 columns, rows x K:
     // 8704x5120 154 -> 133 us, 6144x5120 115 -> 97, 5120x5120 98 -> 89, 3072x5120 67 -> 61,
     // 5120x8704 161 -> 146, 5120x3072 61 -> 57. K must hold an even number of q6_K blocks.
+    if (mmvq_f16_q5_K_shape_ok(src0, src1, dst, ncols)) {
+        __half * xs_ptr;
+        float  * sc_ptr;
+        mmvq_f16_prepare(ctx, src1, ncols, K, &xs_ptr, &sc_ptr);
+        const int64_t sy = dst->nb[1]/sizeof(float);
+        constexpr int RPW = 4, NWT = 2;
+        const dim3 bdk(WARP_SIZE, NWT);
+        const int g = (int) ((rows + NWT*RPW - 1)/(NWT*RPW));
+        const uint8_t * W = (const uint8_t *) src0->data;
+        float * Y = (float *) dst->data;
+        switch (ncols) {
+            case 2:  mmvq_f16_q5_K<2, RPW, NWT, 6><<<g, bdk, 0, ctx.stream()>>>(W, src0->nb[1], xs_ptr, sc_ptr, Y, sy, (int) rows, (int) K); break;
+            case 3:  mmvq_f16_q5_K<3, RPW, NWT, 6><<<g, bdk, 0, ctx.stream()>>>(W, src0->nb[1], xs_ptr, sc_ptr, Y, sy, (int) rows, (int) K); break;
+            case 4:  mmvq_f16_q5_K<4, RPW, NWT, 6><<<g, bdk, 0, ctx.stream()>>>(W, src0->nb[1], xs_ptr, sc_ptr, Y, sy, (int) rows, (int) K); break;
+            default: mmvq_f16_q5_K<5, RPW, NWT, 6><<<g, bdk, 0, ctx.stream()>>>(W, src0->nb[1], xs_ptr, sc_ptr, Y, sy, (int) rows, (int) K); break;
+        }
+        CUDA_CHECK(cudaGetLastError());
+        return true;
+    }
     if (!mmvq_f16_shape_ok(src0, src1, dst, ncols)) {
         return false;
     }

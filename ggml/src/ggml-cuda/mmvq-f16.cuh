@@ -22,3 +22,6 @@ bool ggml_cuda_mmvq_f16_glu(ggml_backend_cuda_context & ctx, const ggml_tensor *
 
 // Forget the cached fp16 activation (called at the start of every graph compute, like the q8_1 cache).
 void ggml_cuda_mmvq_f16_invalidate(ggml_backend_cuda_context & ctx);
+
+// whether q5_K takes the fp16 path (GGML_CUDA_MMVQ_F16_Q5K, default on)
+bool ggml_cuda_mmvq_f16_q5_K_on();
