@@ -2289,7 +2289,14 @@ void * common_ckpt_alloc(size_t n) {
         throw std::bad_alloc();
     }
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
-    madvise(p, sz, MADV_HUGEPAGE);   // advisory: ignored where transparent huge pages are off
+    // Off by default (LLAMA_CKPT_MADVISE=1 turns it on): with THP enabled "always" the block may get huge
+    // pages anyway, but with THP defrag "madvise" (a common default) an madvised region compacts memory
+    // synchronously on its first faults, and on a host whose RAM is mostly page cache that stalled each
+    // 150 MiB checkpoint by ~0.1-0.3 s -- more than the faults it saves.
+    static const bool adv = [] { const char * e = getenv("LLAMA_CKPT_MADVISE"); return e && atoi(e) != 0; }();
+    if (adv) {
+        madvise(p, sz, MADV_HUGEPAGE);
+    }
 #endif
     return p;
 }
