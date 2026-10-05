@@ -1840,7 +1840,7 @@ void ggml_cuda_op_mul_mat_vec_q(
     GGML_UNUSED_VARS(src1, dst, src1_ddf_i, src1_ncols, src1_padded_row_size);
 }
 
-// Pascal, 9..GGML_CUDA_MMVQ_CHUNK_MAX (default 40) columns of q6_K or q5_K weights: short prompts
+// Pascal, 9..GGML_CUDA_MMVQ_CHUNK_MAX (default 28) columns of q6_K or q5_K weights: short prompts
 // and chat turns appended to a cached context. Instead of dequantizing each weight matrix to f16 for
 // a 128-column GEMM tile (a flat ~430 ms per pass of this model below 64 columns), run the fp16
 // mat-vec kernels of mmvq-f16.cu over balanced column chunks of at most 5, so each chunk computes
@@ -1848,6 +1848,7 @@ void ggml_cuda_op_mul_mat_vec_q(
 // The fold GEMM's planners (gemm-fold.cu) ask ggml_cuda_mmvq_chunked_ok too, so they never plan a
 // fusion or prefetch for a matmul this path takes. GGML_CUDA_MMVQ_CHUNK_ALL=1 also chunks the other
 // MMVQ types (8 wide, integer q8_1 path: faster, but measurably less accurate than the fold GEMM).
+// Above 28 columns the fold GEMM's 32/64-column tiles are faster (pp32 93.3 -> 104.3) and as accurate.
 static constexpr int64_t MMVQ_CHUNK_MAX_CHUNKS = 32;
 
 static int64_t ggml_cuda_mmvq_chunk_width(const ggml_type type) {
@@ -1857,7 +1858,7 @@ static int64_t ggml_cuda_mmvq_chunk_width(const ggml_type type) {
 bool ggml_cuda_mmvq_chunked_ok(const int cc, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst) {
     static const int64_t max_cols = [] {
         const char * s = getenv("GGML_CUDA_MMVQ_CHUNK_MAX");
-        return std::min(s ? (int64_t) atoi(s) : (int64_t) 40, 5*MMVQ_CHUNK_MAX_CHUNKS);
+        return std::min(s ? (int64_t) atoi(s) : (int64_t) 28, 5*MMVQ_CHUNK_MAX_CHUNKS);
     }();
     static const bool all_types = [] { const char * s = getenv("GGML_CUDA_MMVQ_CHUNK_ALL"); return s && atoi(s) != 0; }();
     const int64_t n = src1->ne[1];
