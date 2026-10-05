@@ -2668,6 +2668,25 @@ private:
                         }
                     }
 
+                    // the draft's own carry-over (the MTP head pairs the next token with the target's last
+                    // hidden row): without it a restored slot drafts from a stale row and the output depends
+                    // on whatever ran before the restore
+                    {
+                        std::vector<uint8_t> data_spec;
+                        const std::string path_spec = filepath + ".spec";
+                        if (common_speculative_get_state(spec.get(), slot->id, data_spec)) {
+                            std::ofstream f(path_spec, std::ios::binary);
+                            f.write(reinterpret_cast<const char *>(data_spec.data()), data_spec.size());
+                            if (!f) {
+                                send_error(task, "Unable to save the speculative state of the slot", ERROR_TYPE_SERVER);
+                                break;
+                            }
+                            nwrite_dft += data_spec.size();
+                        } else {
+                            std::remove(path_spec.c_str());
+                        }
+                    }
+
                     const int64_t t_end = ggml_time_us();
                     const double t_save_ms = (t_end - t_start) / 1000.0;
 
@@ -2731,6 +2750,16 @@ private:
                             } else {
                                 SRV_WRN("slot file %s has no .draft companion; the draft context starts empty\n", filepath.c_str());
                             }
+                        }
+
+                        if (spec) {
+                            std::vector<uint8_t> data_spec;
+                            std::ifstream f(filepath + ".spec", std::ios::binary);
+                            if (f) {
+                                data_spec.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+                            }
+                            // empty: no carry-over, the next batch starts from a zero row instead of a stale one
+                            common_speculative_set_state(spec.get(), slot->id, data_spec);
                         }
 
                         if (restored.size() > (size_t) slot->n_ctx) {
