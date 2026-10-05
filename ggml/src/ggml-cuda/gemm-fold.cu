@@ -26,6 +26,7 @@
 // to cuBLAS COMPUTE_16F.
 
 #include "gemm-fold.cuh"
+#include "mmvq.cuh"
 
 #include <unordered_map>
 #include <vector>
@@ -503,7 +504,8 @@ static bool ggml_cuda_gemm_fold_eligible(ggml_backend_cuda_context & ctx, const 
     const int cc = ggml_cuda_info().devices[ctx.device].cc;
     return ggml_cuda_gemm_fold_mode() != 0 && cc >= GGML_CUDA_CC_PASCAL && cc < GGML_CUDA_CC_VOLTA && fast_fp16_available(cc) &&
         src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
-        src0->ne[2] == 1 && src0->ne[3] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1;
+        src0->ne[2] == 1 && src0->ne[3] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1 &&
+        !ggml_cuda_mmvq_chunked_ok(cc, src0, src1, dst);
 }
 
 bool ggml_cuda_gemm_fold_wants_f32(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1,
