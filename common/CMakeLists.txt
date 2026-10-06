@@ -86,6 +86,8 @@ add_library(${TARGET}
     json-schema-to-grammar.cpp
     json-schema.cpp
     json-schema.h
+    jev.cpp
+    jev.h
     json.cpp
     json.h
     llguidance.cpp
