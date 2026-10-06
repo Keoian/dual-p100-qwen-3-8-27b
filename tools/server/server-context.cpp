@@ -342,14 +342,20 @@ struct server_slot {
         if (ctx_dft) {
             llama_state_seq_get_data_ext(ctx_dft, cur->data.drft.data(), cur_size_dft, id, LLAMA_STATE_SEQ_FLAGS_NONE);
         }
+        // the draft's carry-over (MTP: the hidden row the next batch pairs with), as in slot files
+        common_speculative_get_state(spec, id, cur->data.spec);
 
         return true;
     }
 
     bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens) {
-        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id);
+        std::optional<std::vector<uint8_t>> data_spec;
+        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id, &data_spec);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
+        } else if (data_spec) {
+            // a cached state replaced the slot's: its carry-over too (empty: none, the next batch pairs with zeros)
+            common_speculative_set_state(spec, id, *data_spec);
         }
 
         return res;
