@@ -3,6 +3,29 @@
 Where the work stands, and what's worth doing next. For the project rules and gates, see
 `CLAUDE.md`. For the results and changes, see `p100-docs/`.
 
+## Branch `tyler-port` (state 2026-10-06; supersedes the sections below for this branch)
+
+- `tyler-port` = `p100-optimizations` at `ae35056eb` + 14 gated code commits + docs, pushed to
+  Keoian/dual-p100-qwen-3-8-27b. Board: ASUS H270, GPU1 on a PCH Gen3 x4 link, **no P2P**
+  (`cudaDeviceCanAccessPeer` 0) -> exchanges are host-staged; `-sm tensor` still wins.
+- What it adds (CHANGES §15, FINDINGS "tyler-port"): host-staged AllReduce and prefill exchange
+  overlap without P2P; fast 9-64-token batches (fp16 mat-vec chunks <=28 columns, 32/64-column fold
+  GEMM tiles, bit-identical to u2); server checkpoint handling for chat turns (no re-copy, no extra
+  split, no MADV_HUGEPAGE, buffer recycling); **byte-identical MTP restore** (the MTP draft's
+  hidden-row carry-over is matched by position and saved with checkpoints, slot files and the RAM
+  prompt cache); slot files carry the context checkpoints.
+- Gates: PPL 2.6074 on this board at every commit (band 2.6209 +/- 0.0199), full op suite for every
+  kernel commit. Base -> branch: chat turn on a 26k prefix ~1.6-2.0 s -> ~0.56 s server prompt time;
+  pp16 37 -> 80; pp2048 404 -> 466; tg256 26.7 -> 27.8.
+- Serving (QUICKSTART "Boards without P2P"): the server command plus `-ctxcp 4`, and for chat apps
+  `--alias --reasoning off --image-max-tokens 1024 --api-key-file`, vision with `mmproj-F16.gguf`.
+- Records outside the repo (build box, `/work/bench/`): `HANDOFF.md` (start there), `SUMMARY.md`,
+  `LOG.md` (every attempt), `RESULTS.md`, `patches/` (rejected diffs), A/B and repro scripts.
+- **Next steps:** (1) optional idle-time autosave of the slot so the last cache state survives a
+  restart (designed, not built: ~1 GB written per 26k-context turn, ask first); (2) or restore a named
+  Ember prefix slot at startup; (3) perf leftovers: fold tile for ~129-383-token batches, a 16-wide
+  tile for 9-16 tokens, a replay-safe way to drop the ~75 ms end-of-prompt checkpoint decode.
+
 ## State (2026-10-01)
 
 - Branch `p100-optimizations` (fast-forwarded from `goal/prefill300`), upstream last merged at

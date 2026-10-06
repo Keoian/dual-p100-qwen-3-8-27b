@@ -133,6 +133,55 @@ These cost more time than any kernel bug.
 10. **A clean merge isn't a correct merge.** Upstream's new `launch_fattn` parameter shifted one
     of our arguments into a `bool` with no compiler warning. See CHANGES §9.
 
+## tyler-port: a board without P2P, chat turns, and exact restore (2026-10-04 to 10-06)
+
+Measured on an ASUS H270 board whose second x16 slot is a PCH Gen3 x4 link; the cards cannot reach each other
+(`cudaDeviceCanAccessPeer` 0 both ways). CHANGES §15 lists the commits.
+
+**What worked, and why.**
+- *Without P2P, small exchanges are latency, not bandwidth.* A staged peer copy costs ~33 us per 4 KB, so decode's
+  many small AllReduces dominate. A host-staged AllReduce with pinned buffers and a spin wait (upstream's
+  allreduce.cu idea, adapted for pre-Volta) took decode from 26.66 to 27.39 t/s. For prefill, overlapping the exchange
+  with the matmul (Kmic's chunked sender, previously only reachable with P2P) was worth +22% at pp512.
+- *Short batches were the real cost of a chat turn.* A 10-40-token turn went through the 128-column fold GEMM tile,
+  ~0.43 s per pass of the model whatever N was. Running q6_K/q5_K as fp16 mat-vec column chunks (<=28 columns now) and
+  giving the fold GEMM 32/64-column tiles (<=64) cut it to what the column count costs. Both keep or improve accuracy
+  (the narrow tile is bit-identical to the 128-column u2 kernel; ub32 KLD went down 6% with the cap at 28).
+- *Server-side, the turn's time was mostly checkpoint handling.* Not re-copying a just-restored checkpoint, not
+  splitting the prompt at the last user message, and recycling checkpoint buffers took the server's prompt time for a
+  short turn from ~1.6-2.0 s to ~0.56 s. The biggest single item was a host setting: with THP `defrag=madvise`,
+  `MADV_HUGEPAGE` on the 150 MiB checkpoint buffers triggered synchronous compaction (~200 ms stalls per turn), and
+  as memory fragmented over a day every server number drifted 745 -> 1050 ms. Dropping the advice fixed both.
+- *MTP determinism* (CHANGES §15): a speculative draft that pairs tokens with the target's hidden rows has state of its
+  own that must travel with every snapshot of the target (checkpoints, slot files, prompt cache). Symptoms of missing
+  it: greedy output that depends on earlier requests and repeats exactly across restarts. A first patch had been
+  applied to the EAGLE3 driver instead of the MTP one, which is why it "had no effect".
+
+**What failed, and why it's interesting.**
+- *Reading the end-of-prompt checkpoint from the MTP rollback snapshot.* With MTP the target keeps per-token recurrent
+  snapshots for the last 4 tokens of every batch, so the n-4 checkpoint can be read after one decode of the whole prompt
+  instead of a separate decode of the last 4 tokens: -4% prompt time, and the snapshot is right (bit-exact in a single
+  ubatch; at 2.6k tokens it is closer to a separately decoded state than two batch splits are to each other). Rejected:
+  the first answer to a prompt then comes from a one-pass state and every replay from snapshot + 4 tokens, so replays no
+  longer reproduce the first answer byte for byte. The separate decode is what makes both paths compute the same thing.
+  Also: in hybrid memory `seq_pos_min` is the recurrent cell's position, so a checkpoint taken "back in time" must move
+  `pos_min` back too, or the restore lookup silently never uses it.
+- *A faster kernel that changed the text.* fp16 q8_0 mat-vec: +12% pp9 in llama-bench, slower over a 10-turn server
+  run; int8 chunking of every type: faster, KLD +87%. Chunk width 8 instead of 5: slower, the fp16 kernels are
+  ALU-bound per column.
+- *Bonsai donor items* mostly did not transfer: its cuBLAS algo picks are superseded by the fold GEMM (accuracy), its
+  f16 split-KV flash-decoding is no faster than q4_0 at 26k context, and two items were already in Kmic's tree.
+
+**How the measurements lied (new traps).**
+- llama-bench blessed a kernel that read the conv state from the wrong buffer (+1%, greedy diverged at character 70).
+  Every kernel change needs a greedy compare and a small-batch KLD, not just speed.
+- Kmic's plain `gemm_fold_kernel` is *not* bit-identical to the u2 kernel it backs up: its integer fold keeps the sums
+  at 2^-112 scale, so outputs near zero land in fp32 subnormals (PPL at ub48 6.7149 vs 6.6833). Mirror u2's arithmetic.
+- Whole-conversation totals vary with the sampled replies; compare scripted, identical prompts (`ember.py ttft`) in
+  ABAB order. The first request after a server start is slower and can differ.
+- A phone chat app that hides `reasoning_content` showed nothing for a minute and aborted on image questions; the
+  server was fine. Serve chat apps with `--reasoning off` (requests can opt back in) and cap image tokens.
+
 ## What transfers to other Pascal cards
 
 - **Direct KV-cache dequantization** helps any pre-Volta GPU with a quantized KV cache, and more

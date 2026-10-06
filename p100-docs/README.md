@@ -20,6 +20,11 @@ It tracks upstream by merging. The last merge was upstream `f46bc30cb`
 
 [QUICKSTART.md](QUICKSTART.md) has the full table from 2k to 260k and the exact server command.
 
+**Branch `tyler-port`** adds work for boards whose cards can't reach each other (no P2P, e.g. one slot behind the
+chipset), for short chat turns on a long cached prefix (~0.56 s per 10-40-token turn at 26k context, from ~1.6-2.0 s),
+and for exact slot save/restore with MTP on. [CHANGES.md §15](CHANGES.md) has the commits and numbers,
+[FINDINGS.md](FINDINGS.md) what worked and what didn't, [QUICKSTART.md](QUICKSTART.md) the serving notes.
+
 The speed didn't cost accuracy. The P100 multiplies in fp16 at twice its fp32 rate, and this fork
 uses that everywhere the work is compute-bound (prefill matmuls, the MTP verify matvec, decode and
 verify attention), but never accumulates long sums in fp16: partial sums move into fp32 every few

@@ -9078,3 +9078,12 @@ staircase's 32k-token requests set it, flat from 32k to 260k).
 Questions at 260k in this staircase prefill at 111-141 t/s (hot, after checkpoint restore) against
 ~153 for the restore-mode 1479-token question; the 09-26 release showed the same gap (100 vs 120).
 My earlier 18.5 min fill estimate (272) was low; measured 24.9.
+
+## 275 — branch `tyler-port`, summary entry (2026-10-04 to 10-06)
+
+Work on a board without P2P (ASUS H270, GPU1 on a chipset x4 link) for a chat assistant's short
+turns, on top of `ae35056eb`. Its per-attempt log (hypothesis, numbers, kept/reverted, ~45
+attempts) lives with the build box's bench records (`/work/bench/LOG.md`, `RESULTS.md`, rejected
+diffs in `patches/`), by that project's rule, not here. Kept results: CHANGES §15. What worked,
+what failed and the new measurement traps: FINDINGS "tyler-port". Gates on every commit: PPL
+2.6074, full op suite for kernel commits.

@@ -301,6 +301,57 @@ power cap, not at an instruction limit: at the cap the clock settles at ~1290 MH
 ~13 TFLOPS. Removing yields or bank conflicts doesn't help, because the cost is energy per flop.
 At that cap, an estimated ~176 t/s is the ceiling at 260k with exact math.
 
+## 15. tyler-port: a board without P2P, short chat turns, exact restore (2026-10-04 to 10-06)
+
+Branch `tyler-port` (Keoian/dual-p100-qwen-3-8-27b), on top of `ae35056eb`. The board is an ASUS H270 with GPU1 on a
+PCH root port at Gen3 x4: `cudaDeviceCanAccessPeer` is 0 both ways, so `GGML_CUDA_P2P=1` enables nothing and every
+exchange is staged through host memory. Tensor split still beats layer split there (decode 26.6 vs 18.2 t/s, prefill
+398 vs 269). The workload is a home assistant ("Ember"): one slot, a ~26k-token stable prefix, then ~10-40-token turns
+with MTP on. Every commit passed `tools/gate.sh` (PPL 2.6074 throughout) and, for kernels, `--full`; the commit bodies
+carry the numbers. Bench notes outside the repo: `/work/bench/{HANDOFF,SUMMARY,LOG}.md`.
+
+| commit | change | measured |
+|---|---|---|
+| `392c97791` | host-staged tensor-parallel AllReduce for small exchanges when there is no P2P (upstream allreduce.cu, pre-Volta spin) | tg256 26.66 -> 27.39 |
+| `edb91989a` | fp16 q5_K mat-vec for the 2-5 token MTP verify (q6_K kernel numerics) | MTP decode 30.9 -> 32.0, verify KLD -12% |
+| `0ff1cd3b1` | 9..40-token batches of q6_K/q5_K as fp16 mat-vec column chunks (idea of Bonsai donor `866ef4d`) | pp16 36.5 -> 74.9 |
+| `756beccb3` | server keeps the just-restored context checkpoint instead of copying it again | Ember TTFT -10% |
+| `cf2090206` | server: no extra prompt split + checkpoint at the last user message (`LLAMA_CKPT_USER_SPLIT=1` = old) | Ember TTFT 1253 -> 781 ms |
+| `36cea94b5` | single-token conv state chain (CONCAT, CPY, SSM_CONV, SILU) in one launch (donor `8de9538`) | tg256 +1.0%, bit-identical |
+| `0d9254d6b` | prefill exchange overlapped with the matmul without P2P (the chunked sender, reachable from the host-staged path) | pp512 343 -> 420, pp2048 404 -> 466 |
+| `10426c827` | no MADV_HUGEPAGE on checkpoint buffers (THP defrag=madvise -> synchronous compaction stalls) | Ember prompt 902 -> 645 ms |
+| `64027ea52` | recycle freed checkpoint buffers (pool of 4, use with `-ctxcp 4`) | Ember prompt 662 -> 584 ms |
+| `bd72ea071` | **MTP determinism**: each batch pairs with the target hidden row of its own position; the row travels with context checkpoints and slot files (`<slot>.spec`) | greedy restore -> same request: 3 distinct of 4 -> identical |
+| `33efc7257` | slot files carry the context checkpoints (`<slot>.ckpt`) | naive save after generation, restore: 9715 -> 4 tokens reprocessed |
+| `a8847f5ed` | 32/64-column fold GEMM tile for <=64-token batches, u2 arithmetic (bit-identical) | pp9 +11%, pp44/pp64 +25%, Ember 584 -> 569 ms |
+| `4a35d78aa` | chunked mat-vec only up to 28 columns, the narrow fold tile above | pp32 93.3 -> 104.3, Ember 570 -> 557 ms, ub32 KLD -6% |
+| `73725dd56` | RAM prompt cache (`--cache-ram`) entries carry the MTP state too | RAM-loaded continuation == live slot (was 3/3 different) |
+
+Net on this board, base -> branch: Ember short turn server prompt time ~1600-2000 -> ~557 ms; pp9/16/32 21/37/68 ->
+72/80/104; pp2048 404 -> 466; tg256 26.7 -> 27.8; MTP decode in chat 38-40 t/s.
+
+**The MTP nondeterminism (on the base build too).** With MTP on, greedy output was not reproducible: a slot restore
+followed by the same request gave 2-3 distinct outputs in 4, and the draft-count sequence repeated across server
+restarts. `common_speculative_impl_draft_mtp::process()` pairs the first token of each batch with the target's
+hidden row for the previous position, kept from the previous call, and never checked which position that row was
+for. A full reprocess was always right; any resume elsewhere (context checkpoint restore, slot restore, speculative
+replay after a partial accept, RAM-cache load) wrote a draft KV entry from a stale row, which changed the drafts, the
+verify batch shapes, and with them near-tie argmaxes. Now the row is looked up by position (pending, previous, last
+verify rows; zeros if unknown) and saved with checkpoints, slot files and RAM-cache entries. Restored, cached and
+RAM-loaded continuations are byte-identical to the live slot, also across restarts. Still expected: a prompt decoded
+in one pass and the same prompt continued from a cached prefix can differ in wording, MTP or not (batch-split numerics).
+
+**Switches added** (defaults are the kept behaviour): `GGML_CUDA_AR_HOST` (0 = off), `GGML_CUDA_AR_HOST_MAX` (bytes,
+1 MiB), `GGML_CUDA_MMVQ_F16_Q5K`, `GGML_CUDA_MMVQ_CHUNK_MAX` (28), `GGML_CUDA_MMVQ_CHUNK_ALL` (int8 chunking of all types,
+less accurate), `GGML_CUDA_GEMM_FOLD_NARROW` (64; 0 = always 128-column tiles), `GGML_CUDA_FUSE_CONV_DECODE`,
+`GGML_CUDA_XCHG_NOP2P`, `LLAMA_CKPT_SKIP_CURRENT`, `LLAMA_CKPT_USER_SPLIT`, `LLAMA_CKPT_MADVISE`, `LLAMA_CKPT_POOL` (4).
+
+**Tried and not kept** (details in FINDINGS "tyler-port"): Bonsai donor cuBLAS ALGO2/ALGO5 GEMMs and f16 split-KV
+flash-decoding (superseded or slower here); int8 chunking of every type (KLD +87%); fp16 q8_0 mat-vec (+12% pp9 in
+llama-bench, slower in the server); chunk width 8; pinned staging for checkpoint copies (neutral once the madvise
+stall was fixed); AllReduce slot ring 8, exchange chunks 2/8; MTP n-max 3/5/6 (4 best); the n-4 checkpoint read from
+the MTP rollback snapshot (-4% prompt time, but breaks byte-identical replays, see FINDINGS).
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,
@@ -314,6 +365,11 @@ At that cap, an estimated ~176 t/s is the ceiling at 260k with exact math.
   It is at 255 registers and one block per SM, so what is left is latency, not arithmetic. Time
   attention changes in the server: the op test runs attention alone at 1328 MHz, where the
   server's power cap holds 1189 (OPTLOG 190).
+- **No P2P boards (tyler-port).** Each turn still runs a separate ~75 ms decode of the prompt's last 4 tokens only to
+  place the end-of-prompt checkpoint; the obvious fix (read it from the MTP rollback snapshot) breaks replay identity.
+  Batches of ~129-383 tokens still pay for 128-column fold tiles (cuBLAS ALGO6 is 14% faster at 300, less accurate).
+- **Slot state does not survive a restart by itself.** Disk slot files are client-driven (`/slots/0?action=save|restore`);
+  the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (bench HANDOFF 5.1).
 - **Prefill attention accumulation.** With a q4_0 cache the fold path (`GGML_CUDA_FA_FOLD`,
   default on, OPTLOG 225) accumulates QK^T in fp16 chains of 128 summed in fp32, and PV in fp16
   over 128 keys, fp32 across them. `GGML_CUDA_FA_FOLD=0` returns to the cuBLAS path (fp16 over the

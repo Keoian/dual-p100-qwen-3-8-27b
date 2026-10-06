@@ -93,6 +93,33 @@ also drives a display or runs other programs, subtract what they use. Lowering `
 fix, and it costs only prefill speed: 2048 → 1024 → 512. With vision, `-mmdev CUDA1` puts the
 projector on the second card instead and frees ~850 MiB on GPU0.
 
+## Boards without P2P, chat apps, and slot save/restore (tyler-port branch)
+
+**No P2P.** If `nvidia-smi topo -m` shows the cards behind different root ports (e.g. one slot wired to the chipset at
+x4), `cudaDeviceCanAccessPeer` is likely 0 and `GGML_CUDA_P2P=1` does nothing; leave it out. Keep `-sm tensor` (still
+faster than `-sm layer`); this branch stages the exchanges through pinned host memory. Measured on such a board:
+tg256 27.8, pp2048 466, MTP decode in chat 38-40 t/s, a 10-40-token chat turn on a 26k cached prefix in ~0.56 s of
+server prompt time, 256k context with vision without running out of memory. Add `-ctxcp 4`: the server recycles 4
+checkpoint buffers, and each checkpoint copy is ~150 MiB.
+
+**Chat apps and vision.** For OpenAI-compatible clients add:
+
+      --alias qwen3.8-27b --reasoning off --image-max-tokens 1024 --api-key-file /path/to/keys
+
+`--reasoning off` because many apps hide `reasoning_content`, show nothing while the model thinks, and time out; a
+request can still turn it on with `"chat_template_kwargs": {"enable_thinking": true}`. `--image-max-tokens 1024`
+because a 2875x1500 image is ~4100 tokens and ~19 s before the first byte; capped, ~4 s. The projector
+(`mmproj-F16.gguf` from the model's GGUF repo) takes ~885 MiB on GPU0; at 256k context with an image GPU0 peaked at
+15.5 of 16.4 GB.
+
+**Slot save/restore** (`--slot-save-path DIR`, then `POST /slots/0?action=save|restore {"filename": ...}`) writes
+`<name>` plus `<name>.draft` (MTP head cache), `<name>.spec` (MTP carry-over row) and `<name>.ckpt` (context
+checkpoints). Keep them together. A restored slot continues byte-identically to the live one (greedy, MTP on), and a
+request that diverges just before the saved end (e.g. the same chat without the generated reply) reprocesses only a
+few tokens. Slot files are client-driven: nothing is saved or restored automatically across a restart.
+The in-memory prompt cache (`--cache-ram`, 8 GiB by default) switches between recent prompts automatically while the
+server runs, also exactly.
+
 ## Precision switches
 
 Everything defaults to the fast path, which is at least as accurate as stock. These exist for
