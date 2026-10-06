@@ -3621,6 +3621,41 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--jev-lora"}, "FNAME",
+        "JEV System 1: backbone LoRA (GGUF), bound only to a separate decision context; enables /v1/decide (default: disabled)",
+        [](common_params & params, const std::string & value) { params.jev_lora = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--jev-head"}, "FNAME",
+        "JEV System 1: decision head (head.safetensors, proj.weight [24, n_embd] + proj.bias)",
+        [](common_params & params, const std::string & value) { params.jev_head = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--jev-calib"}, "FNAME",
+        "JEV System 1: calibration.json with per-kind temperatures (default: none, T = 1)",
+        [](common_params & params, const std::string & value) { params.jev_calib = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--jev-ctx"}, "N",
+        string_format("JEV System 1: context size of the decision context (default: %d)", params.jev_n_ctx),
+        [](common_params & params, int value) { params.jev_n_ctx = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--jev-batch"}, "N",
+        string_format("JEV System 1: batch and ubatch size of the decision context (default: %d)", params.jev_n_batch),
+        [](common_params & params, int value) { params.jev_n_batch = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--jev-ctk"}, "TYPE",
+        string_format("JEV System 1: K cache type of the decision context (default: %s)", ggml_type_name(params.jev_type_k)),
+        [](common_params & params, const std::string & value) { params.jev_type_k = kv_cache_type_from_str(value); }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--jev-ctv"}, "TYPE",
+        string_format("JEV System 1: V cache type of the decision context (default: %s)", ggml_type_name(params.jev_type_v)),
+        [](common_params & params, const std::string & value) { params.jev_type_v = kv_cache_type_from_str(value); }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",
         [](common_params & params, const std::string & value) {

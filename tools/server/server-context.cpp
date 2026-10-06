@@ -10,6 +10,8 @@
 #include "build-info.h"
 #include "common.h"
 #include "fit.h"
+#include "jev.h"
+#include "llama-cpp.h"
 #include "llama.h"
 #include "../../src/llama-ext.h" // llama_set_n_active_tokens (fixed-width verify)
 
@@ -938,6 +940,12 @@ private:
 
     common_speculative_ptr spec;
 
+    // JEV System 1 (/v1/decide): its own context on the shared model, the LoRA bound to that context only, so the
+    // generation context's graphs, caches, checkpoints and MTP state never see it
+    llama_adapter_lora_ptr jev_lora;
+    llama_context_ptr      jev_ctx;
+    jev_head               jev;
+
     bool add_bos_token = true;
 
     int32_t n_ctx; // total context for all clients / slots
@@ -978,7 +986,145 @@ private:
 
     int64_t t_last_load_progress_ms = 0;
 
+    // JEV System 1: created after everything System 2 allocates, so it only takes what is left
+    bool jev_init() {
+        std::string err;
+        if (params_base.jev_head.empty() || !jev_head_load(params_base.jev_head, params_base.jev_calib, jev, err)) {
+            SRV_ERR("jev: %s\n", params_base.jev_head.empty() ? "--jev-lora needs --jev-head" : err.c_str());
+            return false;
+        }
+        if (jev.n_embd != llama_model_n_embd(model_tgt)) {
+            SRV_ERR("jev: head n_embd %d != model n_embd %d\n", jev.n_embd, llama_model_n_embd(model_tgt));
+            return false;
+        }
+        jev_lora.reset(llama_adapter_lora_init(model_tgt, params_base.jev_lora.c_str()));
+        if (!jev_lora) {
+            SRV_ERR("jev: failed to load LoRA '%s'\n", params_base.jev_lora.c_str());
+            return false;
+        }
+
+        llama_context_params cparams = common_context_params_to_llama(params_base);
+        cparams.n_ctx      = params_base.jev_n_ctx;
+        cparams.n_batch    = params_base.jev_n_batch;
+        cparams.n_ubatch   = params_base.jev_n_batch;
+        cparams.n_seq_max  = 1;
+        cparams.n_rs_seq   = 0;     // one-pass decisions: no rollback snapshots
+        cparams.embeddings = false; // embeddings mode would make every token an output
+        cparams.type_k     = params_base.jev_type_k;
+        cparams.type_v     = params_base.jev_type_v;
+        cparams.kv_unified = true;
+
+        jev_ctx.reset(llama_init_from_model(model_tgt, cparams));
+        if (!jev_ctx) {
+            SRV_ERR("%s", "jev: failed to create the System 1 context\n");
+            return false;
+        }
+        float scale = 1.0f;
+        llama_adapter_lora * lora = jev_lora.get();
+        if (llama_set_adapters_lora(jev_ctx.get(), &lora, 1, &scale) != 0) {
+            SRV_ERR("%s", "jev: failed to bind the LoRA to the System 1 context\n");
+            return false;
+        }
+        llama_set_embeddings_nextn(jev_ctx.get(), true, /*masked*/ true);
+
+        SRV_INF("jev: System 1 ready: LoRA '%s', n_ctx %u, n_batch %d, KV %s/%s, T noul %.4f score %.4f choice %.4f\n",
+                params_base.jev_lora.c_str(), llama_n_ctx(jev_ctx.get()), params_base.jev_n_batch,
+                ggml_type_name(params_base.jev_type_k), ggml_type_name(params_base.jev_type_v),
+                jev.temp[JEV_KIND_NOUL], jev.temp[JEV_KIND_SCORE], jev.temp[JEV_KIND_CHOICE]);
+        return true;
+    }
+
+    // one decision on the System 1 context; runs on the main loop, between System 2 batches
+    json jev_decide_request(const json & body) {
+        const int64_t t_start = ggml_time_us();
+
+        jev_kind kind;
+        if (!body.contains("kind") || !body.at("kind").is_string() || !jev_kind_from_str(body.at("kind").get<std::string>(), kind)) {
+            throw std::invalid_argument("\"kind\" must be \"noul\", \"score\" or \"choice\"");
+        }
+        if (!body.contains("question") || !body.at("question").is_string()) {
+            throw std::invalid_argument("\"question\" (string) is required");
+        }
+        std::string state;
+        if (body.contains("state")) {
+            const json & st = body.at("state");
+            if (st.is_string()) {
+                state = st.get<std::string>();
+            } else if (st.is_object()) {
+                state = st.dump();
+            } else if (!st.is_null()) {
+                throw std::invalid_argument("\"state\" must be a string or a JSON object (images are not supported)");
+            }
+        }
+        std::vector<std::string> options = json_value(body, "options", std::vector<std::string>());
+        std::string err;
+        if (!jev_check_options(kind, options, err)) {
+            throw std::invalid_argument(err);
+        }
+
+        const std::string prompt = jev_build_prompt(kind, state, body.at("question").get<std::string>(), options);
+        const llama_tokens tokens = common_tokenize(vocab, prompt, /*add_special*/ false, /*parse_special*/ true);
+        llama_context * ctx = jev_ctx.get();
+        if (tokens.size() > llama_n_ctx(ctx)) {
+            throw std::invalid_argument(string_format("decision prompt is %zu tokens, the System 1 context holds %u (--jev-ctx)",
+                                                      tokens.size(), llama_n_ctx(ctx)));
+        }
+
+        llama_memory_clear(llama_get_memory(ctx), true);
+        const size_t n_batch = llama_n_batch(ctx);
+        llama_batch batch = llama_batch_init(n_batch, 0, 1);
+        for (size_t i = 0; i < tokens.size(); i += n_batch) {
+            common_batch_clear(batch);
+            const size_t n = std::min(tokens.size() - i, n_batch);
+            for (size_t k = 0; k < n; k++) {
+                common_batch_add(batch, tokens[i + k], (llama_pos) (i + k), { 0 }, i + k == tokens.size() - 1);
+            }
+            if (llama_decode(ctx, batch) != 0) {
+                llama_batch_free(batch);
+                throw std::runtime_error("System 1 decode failed");
+            }
+        }
+        llama_batch_free(batch);
+        const float * h = llama_get_embeddings_nextn_ith(ctx, -1);
+        if (!h) {
+            throw std::runtime_error("System 1 produced no hidden state");
+        }
+
+        std::vector<float> logits;
+        const std::vector<float> probs = jev_decide(jev, kind, h, options.size(), &logits);
+        const size_t k = std::max_element(probs.begin(), probs.end()) - probs.begin();
+        const double elapsed = (ggml_time_us() - t_start) / 1e6;
+        SRV_INF("jev: %s, %zu options, %zu tokens, choice %zu (p %.3f), %.1f ms\n",
+                jev_kind_str(kind), options.size(), tokens.size(), k, probs[k], elapsed * 1e3);
+
+        json out = {
+            {"kind",           jev_kind_str(kind)},
+            {"effective_kind", jev_kind_str(kind)},
+            {"options",        options},
+            {"probabilities",  probs},
+            {"choice_index",   k},
+            {"choice",         options[k]},
+            {"confidence",     probs[k]},
+            {"adaptation",     "native"},
+            {"protocol",       "jev27-bare-v1"},
+            {"system",         1},
+            {"adapter",        "jev-system1"},
+            {"model",          model_name},
+            {"usage",          {{"prompt_tokens", tokens.size()}, {"completion_tokens", 0}, {"total_tokens", tokens.size()}}},
+            {"elapsed_seconds", elapsed},
+            {"num_model_requests", 1},
+        };
+        if (json_value(body, "debug", false)) {
+            out["logits"] = logits;
+            out["temperature"] = jev.temp[kind];
+        }
+        return out;
+    }
+
     void destroy() {
+        jev_ctx.reset();
+        jev_lora.reset();
+
         spec.reset();
         spec_init.reset();
 
@@ -1245,6 +1391,10 @@ private:
         }
 
         n_swa = params_base.swa_full ? 0 : llama_model_n_swa(model_tgt);
+
+        if (!params_base.jev_lora.empty() && !jev_init()) {
+            return false;
+        }
 
         // Necessary similarity of prompt for slot selection
         slot_prompt_similarity = params_base.slot_prompt_similarity;
@@ -2903,6 +3053,23 @@ private:
                         });
                     }
                     queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_DECIDE:
+                {
+                    if (!jev_ctx) {
+                        send_error(task, "System 1 is not enabled (start the server with --jev-lora and --jev-head)", ERROR_TYPE_NOT_SUPPORTED);
+                        break;
+                    }
+                    try {
+                        auto res = std::make_unique<server_task_result_decide>();
+                        res->id   = task.id;
+                        res->data = jev_decide_request(task.decide);
+                        queue_results.send(std::move(res));
+                    } catch (const std::invalid_argument & e) {
+                        send_error(task, e.what(), ERROR_TYPE_INVALID_REQUEST);
+                    } catch (const std::exception & e) {
+                        send_error(task, e.what(), ERROR_TYPE_SERVER);
+                    }
                 } break;
             case SERVER_TASK_TYPE_SET_LORA:
                 {
@@ -5519,6 +5686,37 @@ void server_routes::init_routes() {
         }
 
         GGML_ASSERT(dynamic_cast<server_task_result_get_lora*>(result.get()) != nullptr);
+        res->ok(result->to_json());
+        return res;
+    };
+
+    this->post_decide = [this](const server_http_req & req) {
+        auto res = create_response();
+        const json body = json::parse(req.body);
+        if (!body.is_object()) {
+            res->error(format_error_response("Request body must be an object", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_DECIDE);
+            task.id     = rd.get_new_id();
+            task.decide = body;
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_decide*>(result.get()) != nullptr);
         res->ok(result->to_json());
         return res;
     };

@@ -695,6 +695,16 @@ struct common_params {
     std::string slot_save_path;
     std::string media_path; // path to directory for loading media files
 
+    // JEV System 1 decisions (/v1/decide): a backbone LoRA bound to its own small context on the shared model,
+    // plus a 24-slot head over the last token's final-norm hidden state; the generation context never sees the LoRA
+    std::string jev_lora;                    // GGUF LoRA (empty: /v1/decide disabled)
+    std::string jev_head;                    // head.safetensors
+    std::string jev_calib;                   // calibration.json (per-kind temperatures; optional)
+    int32_t     jev_n_ctx   = 8192;          // context of the System 1 context (decision prompt length limit)
+    int32_t     jev_n_batch = 512;           // batch and ubatch of the System 1 context
+    ggml_type   jev_type_k  = GGML_TYPE_F16;
+    ggml_type   jev_type_v  = GGML_TYPE_F16;
+
     float slot_prompt_similarity = 0.1f;
 
     // batched-bench params
