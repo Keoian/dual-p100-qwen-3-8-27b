@@ -219,6 +219,13 @@ CHANGES §16 lists the commits.
 - *q4_0 was immune by accident:* it takes Kmic's fold kernels, a separate implementation, so "q4_0 works, f16 doesn't"
   pointed at a code-path split, not at precision. q8_0 shares the f16 path and had the same bug.
 
+- *Deciding on top of a cache built without the adapter* (plan step 9, the shortcut that would give long-context
+  decisions on System 2's cache for free): the `[kind]+[state]` part decoded at LoRA scale 0, the question part at
+  scale 1, same context. 1,500 test rows against the exact path: 85% top-1 agreement, KL to the targets 0.086 vs 0.022
+  (yes/no 0.027 vs 0.003, score 0.092 vs 0.020, choice 0.135 vs 0.042). Rejected: JEV needs its adapter on the state
+  tokens too. Exact long-context decisions need the state encoded with the adapter (state reuse in the System-1
+  context, memory permitting) or an adapter retrained to activate only after an invocation sequence (aLoRA).
+
 **Traps.**
 - `compute-sanitizer --tool memcheck` is blind to both bug classes (host-side use-after-free, shared-memory ordering
   races); our one 0-error memcheck run predated both bugs and used short decisions that never reached the GEMM path. `CUDA_LAUNCH_BLOCKING=1` deadlocks the host-staged AllReduce (its kernels spin-wait on

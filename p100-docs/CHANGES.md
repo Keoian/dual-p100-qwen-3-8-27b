@@ -434,7 +434,7 @@ both cards sat at their 180 W cap together (371 W peak). Cost of the cap: tg256 
   place the end-of-prompt checkpoint; the obvious fix (read it from the MTP rollback snapshot) breaks replay identity.
   Batches of ~129-383 tokens still pay for 128-column fold tiles (cuBLAS ALGO6 is 14% faster at 300, less accurate).
 - **JEV System 1 (tyler-port §16).** 17-256 options (the vLLM lm_head-LoRA form) not implemented, images in the
-  decision state not supported, (the full 30k evaluation matches the published metrics, see above), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens, ~2 s at
+  decision state not supported, (the full 30k evaluation matches the published metrics, see above), deciding on System 2's cache without the adapter on the state tested and rejected (FINDINGS), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens, ~2 s at
   ~500). Full depth with JEV + image passed with the q8_0 decision cache (served default); q4_0 at 262k not run.
 - **Slot state does not survive a restart by itself.** Disk slot files are client-driven (`/slots/0?action=save|restore`);
   the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (root HANDOFF.md, "parked design").
