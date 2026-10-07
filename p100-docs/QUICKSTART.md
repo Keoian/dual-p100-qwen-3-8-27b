@@ -108,7 +108,9 @@ checkpoint buffers, and each checkpoint copy is ~150 MiB.
 
 `--reasoning off` because many apps hide `reasoning_content`, show nothing while the model thinks, and time out; a
 request can still turn it on with `"chat_template_kwargs": {"enable_thinking": true}`. `--image-max-tokens 1024`
-because a 2875x1500 image is ~4100 tokens and ~19 s before the first byte; capped, ~4 s. The projector
+because a 2875x1500 image is ~4100 tokens and ~19 s before the first byte; capped, ~4 s. The cap is a pixel budget: every
+image is resized to fit it with its aspect ratio kept, so 10 MP images (4380x2285 and a 2592x3888 portrait, tested
+10-07 on the JEV + vision production setup) also came out at ~1,020 tokens, ~5 s, with no extra projector memory. The projector
 (`mmproj-F16.gguf` from the model's GGUF repo) takes ~885 MiB on GPU0; at 256k context with an image GPU0 peaked at
 15.5 of 16.4 GB.
 
