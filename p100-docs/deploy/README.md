@@ -5,7 +5,8 @@ context, MTP speculative decoding, vision, and JEV-27B System 1 decisions (`POST
 OpenAI-compatible on port 8090. Reference box: Unraid host, ASUS H270 (GPU1 on a PCH Gen3 x4 link, no P2P),
 4-core i7, 32 GB RAM, driver 580, Docker with the NVIDIA runtime.
 
-Files here: `Dockerfile`, `run-container.sh` (host), `unraid-user-script.sh` (host, at array start), `build.sh`,
+Files here: `Dockerfile`, `run-container.sh` (host), `unraid-user-script.sh` or the optional
+`unraid-user-script-stop-others.sh` (host, at array start), `build.sh`,
 `fetch.sh`, `start-qwen.sh`, `verify.sh` (inside the container), `SHA256SUMS`.
 
 ## Recipe
@@ -21,6 +22,9 @@ bash run-container.sh            # stops nothing: refuses to start if the GPUs a
 
 Then install `unraid-user-script.sh` with the User Scripts plugin, schedule "At Startup of Array" (the power limit
 resets on every reboot; `START_SERVER=1` in it also starts the server).
+Optional instead: `unraid-user-script-stop-others.sh` also stops other GPU containers first (`STOP_CONTAINERS`,
+default `llm-dev`), waits until the GPUs are free, then starts the server detached and reports when it is up. The
+plugin keeps scripts on the flash drive: `/boot/config/plugins/user.scripts/scripts/<name>/script`.
 
 **Inside the container** (`docker exec -it qwen-dev bash`):
 
