@@ -207,7 +207,7 @@ CHANGES §16 lists the commits.
   NaN after shorter ones and SIGSEGV when run first. gdb on a `-g` copy of `libggml-base` loaded via `LD_LIBRARY_PATH`
   (no full rebuild) pointed at the subgraph write; the arena reset recreated too few subgraphs and too small.
 - *A shared-memory race that looked like numerics* (`fattn_gemm_softmax`). Long prompts with f16 KV gave NaN in ~1 of 4
-  runs, never the same rows twice. The detector that settled it: **compare identical runs**. The GEMM-attention path
+  decodes, a different set of rows each pass (the same row sometimes failed twice, but never every time). The detector that settled it: **compare identical runs**. The GEMM-attention path
   gave different logits for the same prompt across passes (8/13 rows, even with fp32 accumulation, 11/13), while the
   tile kernel was bit-stable. Nondeterminism in a single-stream kernel sequence means a race; reading the kernel for
   shared-memory reuse without a barrier found it. One `__syncthreads()`: 0/39 NaN, 0/13 rows differ.
@@ -215,14 +215,14 @@ CHANGES §16 lists the commits.
   pointed at a code-path split, not at precision. q8_0 shares the f16 path and had the same bug.
 
 **Traps.**
-- `compute-sanitizer --tool memcheck` reports 0 errors for both bugs: memcheck does not see host-side use-after-free or
-  shared-memory ordering races. `CUDA_LAUNCH_BLOCKING=1` deadlocks the host-staged AllReduce (its kernels spin-wait on
+- `compute-sanitizer --tool memcheck` is blind to both bug classes (host-side use-after-free, shared-memory ordering
+  races); our one 0-error memcheck run predated both bugs and used short decisions that never reached the GEMM path. `CUDA_LAUNCH_BLOCKING=1` deadlocks the host-staged AllReduce (its kernels spin-wait on
   the other GPU, serialized launches never start the peer). `MALLOC_PERTURB_` not changing a failure rate is a quick
   way to rule out host heap corruption.
 - An op-suite failure is not automatically yours: one `MUL_MAT q5_1` case at ERR 0.000539 > 0.0005 passed 5/5 reruns
   on both the fixed and the pre-fix library (random inputs per run).
-- A whole-host reset with nothing logged during a long prefill on two P100s at their 180 W cap: suspect power before
-  software. It did not reproduce at <= 64k under memcheck, VRAM pressure or the exact sequence, and the 262k run passed
+- A whole-host reset with nothing logged during a long prefill on two P100s: suspect power before software (this
+  workload holds both cards at their 180 W cap, 371 W peak in the repro; power at the reset itself was not logged). It did not reproduce at <= 64k under memcheck, VRAM pressure or the exact sequence, and the 262k run passed
   at `-pl 150`. Keep a 2 s synced monitor (VRAM, power, PCIe replay counters, AER counters from sysfs) and a synced
   per-request step log while testing; inside a container `dmesg` is not readable but AER counters are.
 - `pkill -f <pattern>` from a tool shell matches that shell's own command line and kills it; use `pkill -x`.

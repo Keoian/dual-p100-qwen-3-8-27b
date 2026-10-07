@@ -389,13 +389,18 @@ q4_0 caches go to the fold kernels, which have barriers between every `red` writ
 Kmic-68/llama.cpp `p100-optimizations`): bench `PR_fattn_gemm_softmax_race.md`.
 
 **System-1 KV type.** Accuracy against an f16 decision cache on 300 test rows: q8_0 KL 2.9e-6, 0 argmax flips; q4_0
-KL 3.5e-4, 6 flips (all near-ties, top-2 gap <= 0.03). Since `03da0202b` f16 and q8_0 are NaN-free; the default stays
-q4_0 (operator's choice, smallest), q8_0 is the accuracy option (+~67 MiB per GPU at 8k).
+KL 3.5e-4, 6 flips (all near-ties, top-2 gap <= ~0.03). Since `03da0202b` f16 and q8_0 are NaN-free; the default
+stays q4_0 (operator's choice, smallest), q8_0 is the accuracy option (+~67 MiB per GPU at 8k), not chosen yet.
+
+**Latency and calibration.** A decision costs ~0.6 s at ~100 tokens and ~2 s at ~500 (1.7-3.0 s for 456-778 tokens with
+System 2 at 28k-226k depth): each decision re-encodes its state. ECE on the 3k subset is 0.0031 vs 0.0011 published
+(UD-Q6_K backbone, f16 decision cache), the reason for the planned temperature refit.
 
 **Host reset on this board.** One hard reset (no log) came ~30 s into a deep prefill at 262k with JEV loaded; both
 P100s were at their 180 W cap together (371 W). It did not reproduce at <= 64k (incl. memcheck, VRAM pressure, the
 exact request sequence), and the full 262k run passed at a 150 W power limit (`nvidia-smi -pl 150`, resets on
-reboot). Treated as a power trip. Cost of the cap: tg256 27.75 -> 26.8, deep prefill ~-9%.
+reboot). Treated as a power trip, not proven: power was not logged at the reset itself; in the repro of this workload
+both cards sat at their 180 W cap together (371 W peak). Cost of the cap: tg256 27.75 -> 26.8, deep prefill ~-9%.
 
 ## Known gaps
 
@@ -406,7 +411,7 @@ reboot). Treated as a power trip. Cost of the cap: tg256 27.75 -> 26.8, deep pre
   Probably the `fattn_gemm_softmax` race fixed in `03da0202b` (§16: same path, same symptoms);
   not re-run with virtual devices.
 - **Prefill at depth is power-bound.** The fold GEMM and attention kernels hold the cards at their
-  175 W cap (§14). Faster code in the same instructions doesn't help; less energy per flop would.
+  175 W cap (§14; the tyler-port board now runs at 150 W, §16, so its absolute numbers are lower). Faster code in the same instructions doesn't help; less energy per flop would.
 - **Attention at depth is compute-bound, not bandwidth-bound.** q4p (§10, §11) runs the 5-token
   verify at 262144 in 2.68 ms per call with fp16 products; the cache read alone would take ~0.35.
   It is at 255 registers and one block per SM, so what is left is latency, not arithmetic. Time
@@ -417,7 +422,8 @@ reboot). Treated as a power trip. Cost of the cap: tg256 27.75 -> 26.8, deep pre
   Batches of ~129-383 tokens still pay for 128-column fold tiles (cuBLAS ALGO6 is 14% faster at 300, less accurate).
 - **JEV System 1 (tyler-port §16).** 17-256 options (the vLLM lm_head-LoRA form) not implemented, images in the
   decision state not supported, temperatures not refit for UD-Q6_K yet, the full 30k evaluation not run (3k subset
-  only), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens).
+  only), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens, ~2 s at
+  ~500). Never run: 262k + JEV with the q4_0 decision cache, and an image at depth with JEV loaded.
 - **Slot state does not survive a restart by itself.** Disk slot files are client-driven (`/slots/0?action=save|restore`);
   the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (bench HANDOFF 5.1).
 - **Prefill attention accumulation.** With a q4_0 cache the fold path (`GGML_CUDA_FA_FOLD`,

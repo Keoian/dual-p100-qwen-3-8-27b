@@ -21,7 +21,8 @@ converter applies to the base weights. f16 vs f32 LoRA: KL 6.6e-7 on 300 decisio
 ## 2. Run decisions over a JSONL file
 
 ```bash
-llama-jev-decide -m Qwen3.8-27B-UD-Q6_K.gguf --lora jev-27b-lora-f16.gguf -ngl 99 -sm tensor -fa 1 -c 2048 -b 1024 -ub 1024 \
+llama-jev-decide -m Qwen3.8-27B-UD-Q6_K.gguf --lora jev-27b-lora-f16.gguf -ngl 99 -sm tensor -fa 1 -c 8192 -b 1024 -ub 1024 \
+    -ctk q4_0 -ctv q4_0 \
     --jev-head JEV-27B/head.safetensors --jev-calib JEV-27B/calibration.json --jev-in rows.jsonl --jev-out out.jsonl
 ```
 
@@ -46,9 +47,11 @@ Stratified 3,000-row subset of `test_set_30k` (1,000 per kind), against the publ
 | openjev_v2 / noul (n=121) | 0.0065 | 0.003 | 1.000 | 0.999 |
 | openjev_v2 / choice (n=111) | 0.173 | 0.146 | 0.928 | 0.885 |
 
-Reweighted to the full set's composition: KL ~0.0195 vs 0.0185. ~690 ms per decision at ~107 tokens.
+Reweighted to the full set's composition: KL ~0.0195 vs 0.0185. ECE (15 bins, soft) 0.0031 vs 0.0011 published:
+calibration is ~3x off on this backbone, hence the planned per-kind temperature refit. ~690 ms per decision at ~107
+tokens.
 
 These numbers are with an f16 decision cache. The server's decision context defaults to q4_0 (KL 3.5e-4 vs f16 on 300
-rows, 6 argmax flips, all near-ties); q8_0 is KL 2.9e-6 with no flips. Pass the same `-ctk/-ctv` to this tool to
+rows, 6 argmax flips, all near-ties, top-2 gap <= ~0.03); q8_0 is KL 2.9e-6 with no flips. Pass the same `-ctk/-ctv` to this tool to
 evaluate what the server runs. f16/q8_0 need `03da0202b`: before it, prompts above ~5.9k tokens could give NaN under
 `-sm tensor` (a race in the GEMM-attention softmax).
