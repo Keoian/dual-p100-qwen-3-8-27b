@@ -392,6 +392,13 @@ Kmic-68/llama.cpp `p100-optimizations`): bench `PR_fattn_gemm_softmax_race.md`.
 KL 3.5e-4, 6 flips (all near-ties, top-2 gap <= ~0.03). Since `03da0202b` f16 and q8_0 are NaN-free; the default
 stays q4_0 (operator's choice, smallest), q8_0 is the accuracy option (+~67 MiB per GPU at 8k), not chosen yet.
 
+**Full-depth check with the served configuration (10-07).** 262k context, MTP, projector on GPU1 (`-mmdev CUDA1`),
+JEV with a **q8_0** decision cache, P2P off, 150 W: a chat filled to 255,168 tokens with a decision after each of 9
+parts (1.6-2.8 s each), a 6,796-token decision (p 0.991, 20.7 s; NaN with f16 before `03da0202b`), an image at 256,221
+(10.2 s, decode 30.2 t/s) and a recall question: all passed. Peaks GPU0 15,217 / GPU1 16,153 of 16,384 MiB, 324 W,
+46 C, PCIe replays and AER 0. This is now the tyler-port production default (JEV q8_0 + vision on GPU1); putting the
+projector on GPU0 instead would mirror the VRAM split, not improve it.
+
 **Latency and calibration.** A decision costs ~0.6 s at ~100 tokens and ~2 s at ~500 (1.7-3.0 s for 456-778 tokens with
 System 2 at 28k-226k depth): each decision re-encodes its state. ECE on the 3k subset is 0.0031 vs 0.0011 published
 (UD-Q6_K backbone, f16 decision cache), the reason for the planned temperature refit.
@@ -423,7 +430,7 @@ both cards sat at their 180 W cap together (371 W peak). Cost of the cap: tg256 
 - **JEV System 1 (tyler-port §16).** 17-256 options (the vLLM lm_head-LoRA form) not implemented, images in the
   decision state not supported, temperatures not refit for UD-Q6_K yet, the full 30k evaluation not run (3k subset
   only), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens, ~2 s at
-  ~500). Never run: 262k + JEV with the q4_0 decision cache, and an image at depth with JEV loaded.
+  ~500). Full depth with JEV + image passed with the q8_0 decision cache (served default); q4_0 at 262k not run.
 - **Slot state does not survive a restart by itself.** Disk slot files are client-driven (`/slots/0?action=save|restore`);
   the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (bench HANDOFF 5.1).
 - **Prefill attention accumulation.** With a q4_0 cache the fold path (`GGML_CUDA_FA_FOLD`,

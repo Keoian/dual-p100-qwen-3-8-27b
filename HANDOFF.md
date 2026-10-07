@@ -20,15 +20,18 @@ Where the work stands, and what's worth doing next. For the project rules and ga
   "virtual devices NaN" gap). Upstreaming brief for Kmic: bench `PR_fattn_gemm_softmax_race.md`.
 - Gates: PPL 2.6074 at every commit (band 2.6209 +/- 0.0199), full op suite for kernel commits.
 - **Operator rules (Tyler) until he lifts them:** no JEV with `GGML_CUDA_P2P=1`; P2P retests only while he watches;
-  nothing above 64k context with JEV loaded without his OK; the full 30k JEV eval is on hold; the q4_0 vs q8_0
-  decision-cache choice is his (q4_0 default).
+  the full 30k JEV eval is on hold; a P2P confirmation run (GGML_CUDA_P2P=1, small depth, while he watches) is
+  saved for later. He approved 262k with JEV after the 10-07 deep test passed, and chose q8_0 for the served decision
+  cache (the server's built-in default stays q4_0).
 - **Power:** one host hard reset (no log) during a 262k deep prefill with both cards at 180 W; not reproducible at
   <= 64k; the same 262k run passed at `nvidia-smi -i 0,1 -pl 150`. The limit resets on reboot: set it at startup.
   tg256 at 150 W: 26.8.
 - Records outside the repo (build box): `/work/bench/HANDOFF.md` (start there), `LOG.md`, `SUMMARY.md`,
   `PHASE3_JEV_SYSTEM1.md`; JEV data/tools in `/work/jev/`.
-- **Next steps:** (1) deep test 262k + JEV (q4_0 decision cache, never run) + image at depth + recall, then
-  production with JEV (`-mmdev CUDA1`), needs the operator's OK; (2) full `test_set_30k` eval with the served
+- **Production (10-07):** JEV (q8_0 decision cache) + vision on GPU1 at 262k, after a full-depth deep test passed
+  (CHANGES §16). Off switch on the build box: `JEV=0` for the start script.
+- **Next steps:** (1) re-run the System 2 determinism/latency harnesses with JEV loaded (greedy reference, MTP restore,
+  RAM cache, Ember TTFT; not run since Phase 3); (2) full `test_set_30k` eval with the served
   decision-cache type (on hold); (3) open the PR to Kmic for `03da0202b` (not opened; run the brief's perplexity repro
   first, it is unverified); (4) temperature refit on the
   calibration split (ECE 0.0031 vs 0.0011 published); (5) Ember routing thresholds; (6) state-prefix reuse across

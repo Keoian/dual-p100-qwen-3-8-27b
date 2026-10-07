@@ -139,13 +139,13 @@ newlines). The answer has `probabilities`, `choice_index`, `choice`, `confidence
 logits. Decisions run in their own context (`--jev-ctx 8192`, `--jev-batch 512`), between System 2 batches; System 2
 output is unchanged by them. ~0.6 s per ~100-token decision, ~2 s per ~500 tokens (no state reuse between decisions).
 
-- **KV type** of the decision context: `--jev-ctk/--jev-ctv`, default q4_0 (KL 3.5e-4 vs f16). q8_0 is practically f16
-  (KL 3e-6) for ~67 MiB more per GPU. f16/q8_0 need commit `03da0202b` (before it, long prompts could NaN).
+- **KV type** of the decision context: `--jev-ctk/--jev-ctv`, server default q4_0 (KL 3.5e-4 vs f16). q8_0 is
+  practically f16 (KL 3e-6) for ~67 MiB more per GPU; the tyler-port production setup serves q8_0. f16/q8_0 need commit `03da0202b` (before it, long prompts could NaN).
 - **VRAM** (262k System 2, MTP, q4_0 System 2 cache, f16 decision cache; q4_0 decision cache not re-measured, ~190 MiB
   less per GPU): JEV adds ~0.6 GiB per GPU idle. After decisions and a few chat turns GPU0 was 15.2 GB and GPU1 15.9 GB
   vs 13.8 / 14.9 GB idle without JEV (that includes System 2's own pool growth). With the projector, move it to GPU1
-  (`-mmdev CUDA1`); measured at 255k: GPU0 15.3, GPU1 16.2 of 16.4 GB. Untested: an image at depth with JEV loaded,
-  and 262k with the q4_0 decision cache.
+  (`-mmdev CUDA1`). Served configuration (q8_0 decision cache), chat at 255k + image at 256k: peaks GPU0 15.2, GPU1
+  16.2 of 16.4 GB, all requests fine. Not run: 262k with the q4_0 decision cache.
 - **Power.** On the tyler-port board a 262k deep prefill with both cards at 180 W reset the host once; at
   `nvidia-smi -i 0,1 -pl 150` the same run passed. The limit resets on reboot.
 - `llama-jev-decide` (same flags plus `--jev-in/--jev-out` JSONL) evaluates a file of decisions; see
