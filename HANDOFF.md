@@ -14,14 +14,14 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   context checkpoints. Base -> branch: chat turn on a 26k prefix ~1.6-2.0 s -> ~0.56 s; pp2048 404 -> 466; tg256
   26.7 -> 27.8 (at 180 W).
 - Phase 3 (CHANGES §16, FINDINGS "tyler-port Phase 3", QUICKSTART "JEV"): **JEV-27B System 1** decisions via
-  `POST /v1/decide` in a separate context on the shared model (LoRA bound to that context only); the 3k-row
-  `test_set_30k` subset matches the published metrics; System 2 byte-identical with decisions interleaved. Found and
+  `POST /v1/decide` in a separate context on the shared model (LoRA bound to that context only); the full
+  `test_set_30k` (29,955 rows) matches the published metrics (KL 0.0186 vs 0.0185, ECE 0.0012 vs 0.0011); System 2 byte-identical with decisions interleaved. Found and
   fixed on the way: a **use-after-free in the meta backend's subgraph arena** (`847fa0515`) and a **missing barrier in
   `fattn_gemm_softmax`** (`03da0202b`, NaN/nondeterminism with f16/q8_0 KV on long prompts; likely also the old
   "virtual devices NaN" gap). Upstreaming brief for Kmic: bench `PR_fattn_gemm_softmax_race.md`.
 - Gates: PPL 2.6074 at every commit (band 2.6209 +/- 0.0199), full op suite for kernel commits.
 - **Operator rules (Tyler) until he lifts them:** no JEV with `GGML_CUDA_P2P=1`; P2P retests only while he watches;
-  the full 30k JEV eval is on hold; a P2P confirmation run (GGML_CUDA_P2P=1, small depth, while he watches) is
+  a P2P confirmation run (GGML_CUDA_P2P=1, small depth, while he watches) is
   saved for later. He approved 262k with JEV after the 10-07 deep test passed, and chose q8_0 for the served decision
   cache (the server's built-in default stays q4_0).
 - **Power:** one host hard reset (no log) during a 262k deep prefill with both cards at 180 W; not reproducible at
@@ -33,9 +33,8 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   (CHANGES §16). Off switch on the build box: `JEV=0` for the start script.
 - **Next steps:** (1) re-run the System 2 determinism/latency harnesses with JEV loaded (greedy reference, MTP restore,
   RAM cache, Ember TTFT; not run since Phase 3); (2) full `test_set_30k` eval with the served
-  decision-cache type (on hold); (3) open the PR to Kmic for `03da0202b` (not opened; run the brief's perplexity repro
-  first, it is unverified); (4) check the temperatures on the full set
-  (3k ECE 0.0031 scales to ~0.0010 at the published 30k size, so a refit is probably unnecessary); (5) Ember routing thresholds; (6) state-prefix reuse across
+  decision-cache type: DONE 10-07, matches published; (3) open the PR to Kmic for `03da0202b` (not opened; run the brief's perplexity repro
+  first, it is unverified); (4) temperatures: checked on the full set, ECE 0.0012 vs 0.0011, no refit needed; (5) Ember routing thresholds; (6) state-prefix reuse across
   decisions (latency); (7) round-1
   leftovers: slot autosave (ask first), fold tile for ~129-383-token batches.
 

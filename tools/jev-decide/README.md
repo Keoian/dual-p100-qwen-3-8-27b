@@ -37,9 +37,28 @@ The server exposes the same thing as `POST /v1/decide` (alias `/decide`): `--jev
 `--jev-lora`), `--jev-calib`, and for the decision context `--jev-ctx` (8192), `--jev-batch` (512), `--jev-ctk/--jev-ctv`
 (q4_0 built-in default; the tyler-port production setup uses q8_0). Request and response: QUICKSTART "JEV System 1".
 
-## Accuracy on 2x P100 (UD-Q6_K backbone, f16 LoRA, f16 KV)
+## Accuracy on 2x P100
 
-Stratified 3,000-row subset of `test_set_30k` (1,000 per kind), against the published bf16 numbers:
+**Full `test_set_30k`, all 29,955 rows** (2026-10-07), through the production server's `/v1/decide`: UD-Q6_K backbone,
+f16 LoRA, q8_0 decision cache, 262k System 2 and vision loaded; published = bf16 (autotrust `reports/eval_27b_bundle.md`):
+
+| metric | ours | published |
+|---|---:|---:|
+| KL(target ‖ model), all rows | 0.0186 | 0.0185 |
+| KL excluding yuri_v1 placeholders (27,695) | 0.0201 | 0.0201 |
+| KL on Jev-labelled rows (yuri_v3, 25,376) | 0.0167 | ≈0.017 |
+| JS | 0.0049 | 0.0048 |
+| ECE (15 bins) | 0.0012 | 0.0011 |
+| noul AUROC / Brier (soft) | 0.9961 / 0.0013 | 0.9961 / 0.0013 |
+| score MAE (expected) / RPS | 0.0979 / 0.0077 | 0.0976 / 0.0077 |
+| choice KL / top-1 (all rows) | 0.0366 / 0.900 | 0.0364 / 0.904 |
+| by source/kind KL: yuri_v3 choice / noul / score | 0.0249 / 0.0043 / 0.0210 | 0.025 / 0.004 / 0.021 |
+| by source/kind KL: openjev_v2 choice / noul, yuri_v1 noul | 0.1467 / 0.0030, 0.0000 | 0.146 / 0.003, 0.000 |
+
+0 NaN; 627 ms median, 697 mean, 1.0 s p95 per decision (106 tokens mean). RPS is the unnormalized sum over the
+cumulative distribution. Top-1 counts tied targets toward the first option; over unique-argmax rows only it is 0.912.
+
+Earlier (10-06), stratified 3,000-row subset of `test_set_30k` (1,000 per kind), against the published bf16 numbers:
 
 | source / kind | KL ours | KL published | top-1 ours | top-1 published |
 |---|---|---|---|---|
@@ -50,12 +69,8 @@ Stratified 3,000-row subset of `test_set_30k` (1,000 per kind), against the publ
 | openjev_v2 / noul (n=121) | 0.0065 | 0.003 | 1.000 | 0.999 |
 | openjev_v2 / choice (n=111) | 0.173 | 0.146 | 0.928 | 0.885 |
 
-Reweighted to the full set's composition: KL ~0.0195 vs 0.0185. ECE (15 bins, soft) 0.0031 vs 0.0011 published,
-but on 3,000 vs 29,955 rows: ECE shrinks ~1/sqrt(n), which scales ours to ~0.0010 at the published size (no evidence
-of worse calibration; the full-set run would confirm). ~690 ms per decision at ~107
-tokens.
-
-These numbers are with an f16 decision cache. q8_0 (served in production) is KL 2.9e-6 vs f16 with no flips on 300
+Reweighted to the full set's composition: KL ~0.0195 vs 0.0185. ECE 0.0031 on 3,000 rows: ECE shrinks ~1/sqrt(n),
+and the full set indeed gives 0.0012. The 3k numbers are with an f16 decision cache. q8_0 (served in production) is KL 2.9e-6 vs f16 with no flips on 300
 rows; q4_0 (the server's built-in default) is KL 3.5e-4, 6 argmax flips, all near-ties (top-2 gap <= ~0.03). Pass the
 served `-ctk/-ctv` to this tool to evaluate what the server runs. f16/q8_0 need `03da0202b`: before it, prompts above ~5.9k tokens could give NaN under
 `-sm tensor` (a race in the GEMM-attention softmax).

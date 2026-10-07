@@ -363,7 +363,7 @@ cache) never sees adapter state. Plan and the open steps: bench `PHASE3_JEV_SYST
 | commit | change | measured |
 |---|---|---|
 | `673238c94` | LoRA tensors (`<w>.lora_a/b`) inherit the base weight's `-sm tensor` split (B for column-split, A for row-split bases; the other mirrored) + `tools/jev-decide/convert_jev_lora.py` (PEFT -> GGUF LoRA, base converter's V-head reorder) | JEV LoRA under -sm tensor: abort -> loads; scale 0 bit-identical to no adapter |
-| `c7db9b98c` | `common/jev.{h,cpp}` (bare-v1 template, head, calibration) + `llama-jev-decide` (JSONL in, slot logits + probabilities out) | 3k stratified rows of `test_set_30k`: matches the published per-slice KL/top-1/AUROC/MAE (reweighted KL ~0.0195 vs 0.0185) |
+| `c7db9b98c` | `common/jev.{h,cpp}` (bare-v1 template, head, calibration) + `llama-jev-decide` (JSONL in, slot logits + probabilities out) | 3k stratified rows of `test_set_30k`: matches the published per-slice KL/top-1/AUROC/MAE (reweighted KL ~0.0195 vs 0.0185); full 30k (10-07): KL 0.0186 vs 0.0185, ECE 0.0012 vs 0.0011 |
 | `1d8021394` | server `POST /v1/decide` (`--jev-lora/--jev-head/--jev-calib/--jev-ctx/--jev-batch/--jev-ctk/--jev-ctv`), a main-loop task between System 2 batches | System 2 greedy byte-identical with decisions interleaved; ~630 ms per ~85-token decision |
 | `847fa0515` | **ggml-meta use-after-free**: after the subgraph arena reset, recreate all `max_subgraphs` subgraphs at `max_nnodes` capacity | varying-shape graphs: SIGSEGV / NaN -> fixed |
 | `7ebf9177a` | System-1 context KV defaults to q4_0 | long decisions under -sm tensor: 0 NaN (f16 then still NaN'd, see next row) |
@@ -400,10 +400,14 @@ parts (1.6-2.8 s each), a 6,796-token decision (p 0.991, 20.7 s; NaN with f16 be
 projector on GPU0 instead would mirror the VRAM split, not improve it.
 
 **Latency and calibration.** A decision costs ~0.6 s at ~100 tokens and ~2 s at ~500 (1.7-3.0 s for 456-778 tokens with
-System 2 at 28k-226k depth): each decision re-encodes its state. ECE on the 3k subset is 0.0031 vs 0.0011 published
-on 29,955 rows; ECE shrinks ~1/sqrt(n) (bootstrap of our results: 0.0081 at 500 rows, 0.0062 at 1,000, 0.0043 at
-3,000), so scaled to the full set it is ~0.0010: no evidence of worse calibration on UD-Q6_K. The full 30k eval would
-confirm it; a temperature refit is a check, not a known need.
+System 2 at 28k-226k depth): each decision re-encodes its state. 
+
+**Full evaluation (10-07).** All 29,955 rows of `test_set_30k` through the production server (q8_0 decision cache,
+262k System 2 and vision loaded): KL 0.0186 vs 0.0185 published (bf16), excluding placeholders 0.0201 vs 0.0201,
+Jev-labelled rows 0.0167 vs ≈0.017, ECE 0.0012 vs 0.0011, noul AUROC 0.9961 vs 0.9961, score MAE 0.0979 vs 0.0976,
+choice KL 0.0366 vs 0.0364; 0 NaN, 627 ms median per decision. The Q6_K backbone costs nothing measurable and the
+published temperatures fit; no refit needed. Full table: `tools/jev-decide/README.md`. (The 3k subset's ECE 0.0031
+was small-sample bias: ECE shrinks ~1/sqrt(n).)
 
 **Host reset on this board.** One hard reset (no log) came ~30 s into a deep prefill at 262k with JEV loaded; both
 P100s were at their 180 W cap together (371 W). It did not reproduce at <= 64k (incl. memcheck, VRAM pressure, the
@@ -430,8 +434,7 @@ both cards sat at their 180 W cap together (371 W peak). Cost of the cap: tg256 
   place the end-of-prompt checkpoint; the obvious fix (read it from the MTP rollback snapshot) breaks replay identity.
   Batches of ~129-383 tokens still pay for 128-column fold tiles (cuBLAS ALGO6 is 14% faster at 300, less accurate).
 - **JEV System 1 (tyler-port §16).** 17-256 options (the vLLM lm_head-LoRA form) not implemented, images in the
-  decision state not supported, temperatures not re-checked on the full set, the full 30k evaluation not run (3k subset
-  only), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens, ~2 s at
+  decision state not supported, (the full 30k evaluation matches the published metrics, see above), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens, ~2 s at
   ~500). Full depth with JEV + image passed with the q8_0 decision cache (served default); q4_0 at 262k not run.
 - **Slot state does not survive a restart by itself.** Disk slot files are client-driven (`/slots/0?action=save|restore`);
   the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (root HANDOFF.md, "parked design").
