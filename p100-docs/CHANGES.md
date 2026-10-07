@@ -352,12 +352,59 @@ llama-bench, slower in the server); chunk width 8; pinned staging for checkpoint
 stall was fixed); AllReduce slot ring 8, exchange chunks 2/8; MTP n-max 3/5/6 (4 best); the n-4 checkpoint read from
 the MTP rollback snapshot (-4% prompt time, but breaks byte-identical replays, see FINDINGS).
 
+## 16. tyler-port Phase 3: JEV-27B System 1 decisions, and two tensor-split bugs (2026-10-06)
+
+[autotrust/JEV-27B](https://huggingface.co/autotrust/JEV-27B) adds calibrated one-pass decisions (`noul` yes/no,
+`score` 0-5, `choice` up to 16 options) to the same Qwen3.8-27B backbone: a rank-16 LoRA on every projection plus a
+linear 24-slot head over the last token's final-norm hidden state. Here it runs in a **separate llama_context on the
+shared model** with the LoRA bound to that context only, so System 2 (generation, MTP, checkpoints, slot files, prompt
+cache) never sees adapter state. Plan and the open steps: bench `PHASE3_JEV_SYSTEM1.md`.
+
+| commit | change | measured |
+|---|---|---|
+| `673238c94` | LoRA tensors (`<w>.lora_a/b`) inherit the base weight's `-sm tensor` split (B for column-split, A for row-split bases; the other mirrored) + `tools/jev-decide/convert_jev_lora.py` (PEFT -> GGUF LoRA, base converter's V-head reorder) | JEV LoRA under -sm tensor: abort -> loads; scale 0 bit-identical to no adapter |
+| `c7db9b98c` | `common/jev.{h,cpp}` (bare-v1 template, head, calibration) + `llama-jev-decide` (JSONL in, slot logits + probabilities out) | 3k stratified rows of `test_set_30k`: matches the published per-slice KL/top-1/AUROC/MAE (reweighted KL ~0.0195 vs 0.0185) |
+| `1d8021394` | server `POST /v1/decide` (`--jev-lora/--jev-head/--jev-calib/--jev-ctx/--jev-batch/--jev-ctk/--jev-ctv`), a main-loop task between System 2 batches | System 2 greedy byte-identical with decisions interleaved; ~630 ms per ~85-token decision |
+| `847fa0515` | **ggml-meta use-after-free**: after the subgraph arena reset, recreate all `max_subgraphs` subgraphs at `max_nnodes` capacity | varying-shape graphs: SIGSEGV / NaN -> fixed |
+| `7ebf9177a` | System-1 context KV defaults to q4_0 | long decisions under -sm tensor: 0 NaN (f16 then still NaN'd, see next row) |
+| `03da0202b` | **missing `__syncthreads()` in `fattn_gemm_softmax`** before `red[]` is reused for the row sum | f16 KV long prompts 10/39 NaN -> 0/39, run-to-run drift 8/13 rows -> 0/13; q8_0 8/39 -> 0/39 |
+
+**The meta-backend use-after-free (`847fa0515`, `ggml-backend-meta.cpp`).** When a graph raises `max_nnodes` (or
+`n_subgraphs`), the arena holding the per-backend subgraphs is reset, but only the *current* graph's `n_subgraphs`
+subgraphs were recreated while `max_subgraphs` kept its larger old value. A later graph with `n_subgraphs <=
+max_subgraphs` skipped recreation and wrote through `cgraph_main` pointers into the freed arena (gdb: line 2310,
+`cgraph_ij->n_nodes = ...`). Second defect in the same block: subgraphs got capacity `cgraph->n_nodes` of the current
+graph while the arena is sized for `max_nnodes`, so a later larger graph could overflow `nodes[]`. Any `-sm tensor`
+context whose graph shape changes is exposed; JEV's variable prompt lengths hit it at once, System 2's stable shapes
+rarely do.
+
+**The softmax race (`03da0202b`, `fattn-gemm.cu`).** `fattn_gemm_softmax` reduces the row max through `__shared__
+red[]`, every thread reads `vmax = red[0]`, and pass 2 reuses `red[]` for the row sum with no barrier in between:
+warp 0 can store its partial sum into `red[0]` before a slower warp has read the max, which then uses the sum as `m`
+in `exp(v - m)`. fp32 (`GGML_CUDA_FA_GEMM_PREC=32`): run-to-run drift; default fp16: overflow to inf, NaN output. Only
+the generic GEMM-attention branch calls it (pre-Volta, nkv >= 4096, >= 128 query rows, **KV type other than q4_0**);
+q4_0 caches go to the fold kernels, which have barriers between every `red` write and read. Present since `738022bda`;
+`cb6024e6b` (out-of-place S/P) chased the same symptoms and made them rarer. System 2 A/B (fixed vs pre-fix library,
+150 W): pp2048@8k 408.96/406.82 vs 407.63/406.64, tg256@8k 26.36/26.37 vs 26.33/26.35. Upstreaming brief (target
+Kmic-68/llama.cpp `p100-optimizations`): bench `PR_fattn_gemm_softmax_race.md`.
+
+**System-1 KV type.** Accuracy against an f16 decision cache on 300 test rows: q8_0 KL 2.9e-6, 0 argmax flips; q4_0
+KL 3.5e-4, 6 flips (all near-ties, top-2 gap <= 0.03). Since `03da0202b` f16 and q8_0 are NaN-free; the default stays
+q4_0 (operator's choice, smallest), q8_0 is the accuracy option (+~67 MiB per GPU at 8k).
+
+**Host reset on this board.** One hard reset (no log) came ~30 s into a deep prefill at 262k with JEV loaded; both
+P100s were at their 180 W cap together (371 W). It did not reproduce at <= 64k (incl. memcheck, VRAM pressure, the
+exact request sequence), and the full 262k run passed at a 150 W power limit (`nvidia-smi -pl 150`, resets on
+reboot). Treated as a power trip. Cost of the cap: tg256 27.75 -> 26.8, deep prefill ~-9%.
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,
   4 of 8 identical runs gave NaN. It follows the GEMM attention path (`GGML_CUDA_FA_GEMM=0` is
   stable 5 of 5). Two physical GPUs are bit-stable, so nothing that ships is affected. OPTLOG
   attempt 153 §8c has the data.
+  Probably the `fattn_gemm_softmax` race fixed in `03da0202b` (§16: same path, same symptoms);
+  not re-run with virtual devices.
 - **Prefill at depth is power-bound.** The fold GEMM and attention kernels hold the cards at their
   175 W cap (§14). Faster code in the same instructions doesn't help; less energy per flop would.
 - **Attention at depth is compute-bound, not bandwidth-bound.** q4p (§10, §11) runs the 5-token
@@ -368,6 +415,9 @@ the MTP rollback snapshot (-4% prompt time, but breaks byte-identical replays, s
 - **No P2P boards (tyler-port).** Each turn still runs a separate ~75 ms decode of the prompt's last 4 tokens only to
   place the end-of-prompt checkpoint; the obvious fix (read it from the MTP rollback snapshot) breaks replay identity.
   Batches of ~129-383 tokens still pay for 128-column fold tiles (cuBLAS ALGO6 is 14% faster at 300, less accurate).
+- **JEV System 1 (tyler-port §16).** 17-256 options (the vLLM lm_head-LoRA form) not implemented, images in the
+  decision state not supported, temperatures not refit for UD-Q6_K yet, the full 30k evaluation not run (3k subset
+  only), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens).
 - **Slot state does not survive a restart by itself.** Disk slot files are client-driven (`/slots/0?action=save|restore`);
   the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (bench HANDOFF 5.1).
 - **Prefill attention accumulation.** With a q4_0 cache the fold path (`GGML_CUDA_FA_FOLD`,

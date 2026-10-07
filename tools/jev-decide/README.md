@@ -47,3 +47,8 @@ Stratified 3,000-row subset of `test_set_30k` (1,000 per kind), against the publ
 | openjev_v2 / choice (n=111) | 0.173 | 0.146 | 0.928 | 0.885 |
 
 Reweighted to the full set's composition: KL ~0.0195 vs 0.0185. ~690 ms per decision at ~107 tokens.
+
+These numbers are with an f16 decision cache. The server's decision context defaults to q4_0 (KL 3.5e-4 vs f16 on 300
+rows, 6 argmax flips, all near-ties); q8_0 is KL 2.9e-6 with no flips. Pass the same `-ctk/-ctv` to this tool to
+evaluate what the server runs. f16/q8_0 need `03da0202b`: before it, prompts above ~5.9k tokens could give NaN under
+`-sm tensor` (a race in the GEMM-attention softmax).

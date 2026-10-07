@@ -120,6 +120,35 @@ few tokens. Slot files are client-driven: nothing is saved or restored automatic
 The in-memory prompt cache (`--cache-ram`, 8 GiB by default) switches between recent prompts automatically while the
 server runs, also exactly.
 
+## JEV System 1 decisions (`/v1/decide`, tyler-port branch)
+
+Calibrated one-pass decisions from [autotrust/JEV-27B](https://huggingface.co/autotrust/JEV-27B) on the same loaded
+model. Download only `adapter/`, `head.safetensors`, `calibration.json`, `config.json` (not the bf16 shards), convert
+the LoRA once, then add three flags to the server command:
+
+      python3 tools/jev-decide/convert_jev_lora.py --adapter JEV-27B/adapter --config JEV-27B/config.json \
+          --outtype f16 --out jev-27b-lora-f16.gguf
+
+      --jev-lora jev-27b-lora-f16.gguf --jev-head JEV-27B/head.safetensors --jev-calib JEV-27B/calibration.json
+
+      curl -s :8090/v1/decide -H 'Authorization: Bearer KEY' -H 'Content-Type: application/json' \
+        -d '{"kind":"choice","state":"...","question":"...","options":["A thing","Another thing"]}'
+
+Kinds: `noul` (options `["false","true"]`, may be omitted), `score` (0-5), `choice` (2-16 options, one per line, no
+newlines). The answer has `probabilities`, `choice_index`, `choice`, `confidence`; `"debug": true` adds the raw slot
+logits. Decisions run in their own context (`--jev-ctx 8192`, `--jev-batch 512`), between System 2 batches; System 2
+output is unchanged by them. ~0.6 s per ~100-token decision on two P100s.
+
+- **KV type** of the decision context: `--jev-ctk/--jev-ctv`, default q4_0 (KL 3.5e-4 vs f16). q8_0 is practically f16
+  (KL 3e-6) for ~67 MiB more per GPU. f16/q8_0 need commit `03da0202b` (before it, long prompts could NaN).
+- **VRAM** (262k System 2, MTP, q4_0 System 2 cache): JEV adds ~0.6 GiB per GPU idle, up to ~1.1 GiB on GPU0 after use.
+  With the projector too, move it to GPU1 (`-mmdev CUDA1`); measured at 255k with an f16 decision cache: GPU0 15.3,
+  GPU1 16.2 of 16.4 GB. The image step at that depth has not been measured with JEV loaded.
+- **Power.** On the tyler-port board a 262k deep prefill with both cards at 180 W reset the host once; at
+  `nvidia-smi -i 0,1 -pl 150` the same run passed. The limit resets on reboot.
+- `llama-jev-decide` (same flags plus `--jev-in/--jev-out` JSONL) evaluates a file of decisions; see
+  `tools/jev-decide/README.md`. Pass `-ctk q4_0 -ctv q4_0` to it to match the server's decision context.
+
 ## Precision switches
 
 Everything defaults to the fast path, which is at least as accurate as stock. These exist for
