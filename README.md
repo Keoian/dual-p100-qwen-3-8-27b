@@ -5,6 +5,22 @@
 > The math is at least as accurate as stock: KLD against an fp32 run 0.00119, where upstream's
 > fp16 path reads 0.00152. It tracks upstream by merging.
 > See **[p100-docs/](p100-docs/README.md)** for results, changes and how to run it.
+>
+> **Branch `tyler-port`** (boards without P2P, short chat turns, exact restore, and JEV-27B System 1 decisions on
+> `POST /v1/decide`) has a full bring-up recipe in **[p100-docs/deploy/](p100-docs/deploy/README.md)**. In short, on a
+> Docker host with two P100s:
+>
+> ```bash
+> git clone -b tyler-port https://github.com/Keoian/dual-p100-qwen-3-8-27b /mnt/user/qwen-dev/src/llama.cpp
+> cd /mnt/user/qwen-dev/src/llama.cpp/p100-docs/deploy
+> docker build -t qwen-dev:latest . && bash run-container.sh     # sets the 150 W GPU power limit
+> docker exec -it qwen-dev bash                                   # then, inside:
+> D=/work/src/llama.cpp/p100-docs/deploy
+> bash $D/build.sh build-exp && bash $D/fetch.sh                  # sm_60 build; pinned model, mmproj, JEV
+> umask 077; openssl rand -hex 32 > /work/qwen-api-keys; cp $D/start-qwen.sh /work/
+> setsid nohup bash /work/start-qwen.sh > /work/serve-8090.log 2>&1 & bash $D/verify.sh
+> ```
+>
 > Upstream's README follows.
 
 # llama.cpp

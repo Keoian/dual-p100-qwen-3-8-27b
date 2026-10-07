@@ -702,7 +702,7 @@ struct common_params {
     std::string jev_calib;                   // calibration.json (per-kind temperatures; optional)
     int32_t     jev_n_ctx   = 8192;          // context of the System 1 context (decision prompt length limit)
     int32_t     jev_n_batch = 512;           // batch and ubatch of the System 1 context
-    ggml_type   jev_type_k  = GGML_TYPE_Q4_0; // f16 KV gives intermittent NaN on long multi-ubatch prompts under -sm tensor
+    ggml_type   jev_type_k  = GGML_TYPE_Q4_0; // smallest; f16/q8_0 are safe since the fattn_gemm_softmax barrier fix (q8_0 ~= f16)
     ggml_type   jev_type_v  = GGML_TYPE_Q4_0;
 
     float slot_prompt_similarity = 0.1f;

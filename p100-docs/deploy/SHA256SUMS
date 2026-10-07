@@ -1,0 +1,6 @@
+c9c206812fbe4ac7b76a729e25928b63f2ae89d37f69da7a71c20aec763cd436  /work/models/Qwen3.8-27B-UD-Q6_K.gguf
+cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e  /work/models/mmproj-F16.gguf
+7bdb88d73895931d3cfc55ba95766f45df50f244f631d8fe55255f67ec0b6569  /work/jev/JEV-27B/adapter/adapter_model.safetensors
+8256776bac46e653a3e126ab4e8d5e6d0eed73e7fa6f1e55306083607e44753d  /work/jev/JEV-27B/head.safetensors
+902f4f26fdf1b92224c32b706ee6cea381f6465621c82975bf7e0023c02d9dd2  /work/jev/JEV-27B/calibration.json
+c1ef3fe7292d6152502877d25dbcca546995732574643310c0da0c69acce647f  /work/jev/gguf/jev-27b-lora-f16.gguf

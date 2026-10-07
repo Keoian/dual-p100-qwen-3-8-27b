@@ -6,8 +6,9 @@ final-norm hidden state. This directory runs it on the unmodified Qwen3.8-27B GG
 
 ## 1. Convert the LoRA (once)
 
-Download only the System 1 files (`adapter/`, `head.safetensors`, `calibration.json`, `config.json`), not the bf16
-backbone shards, then:
+Download only the System 1 files (`adapter/`, `head.safetensors`, `calibration.json`, `config.json`; pinned revision
+`51740a8891c2a8baefd969237fd44187b3e3a115`), not the bf16 backbone shards. The converter needs
+`pip install numpy safetensors` (no torch) and imports the repo's `gguf-py`, so run it from this checkout:
 
 ```bash
 python3 tools/jev-decide/convert_jev_lora.py --adapter JEV-27B/adapter --config JEV-27B/config.json \
@@ -22,7 +23,7 @@ converter applies to the base weights. f16 vs f32 LoRA: KL 6.6e-7 on 300 decisio
 
 ```bash
 llama-jev-decide -m Qwen3.8-27B-UD-Q6_K.gguf --lora jev-27b-lora-f16.gguf -ngl 99 -sm tensor -fa 1 -c 8192 -b 1024 -ub 1024 \
-    -ctk q4_0 -ctv q4_0 \
+    -ctk q8_0 -ctv q8_0 \
     --jev-head JEV-27B/head.safetensors --jev-calib JEV-27B/calibration.json --jev-in rows.jsonl --jev-out out.jsonl
 ```
 
@@ -32,7 +33,9 @@ temperature. Prompts use the `bare-v1` template, tokenized as one string without
 context. The hidden state is read with `llama_set_embeddings_nextn` (masked), not embeddings mode, which would make
 every prompt token an output.
 
-The server exposes the same thing as `POST /v1/decide` (`--jev-lora`, `--jev-head`, `--jev-calib`).
+The server exposes the same thing as `POST /v1/decide` (alias `/decide`): `--jev-lora`, `--jev-head` (required with
+`--jev-lora`), `--jev-calib`, and for the decision context `--jev-ctx` (8192), `--jev-batch` (512), `--jev-ctk/--jev-ctv`
+(q4_0 built-in default; the tyler-port production setup uses q8_0). Request and response: QUICKSTART "JEV System 1".
 
 ## Accuracy on 2x P100 (UD-Q6_K backbone, f16 LoRA, f16 KV)
 
@@ -51,7 +54,7 @@ Reweighted to the full set's composition: KL ~0.0195 vs 0.0185. ECE (15 bins, so
 calibration is ~3x off on this backbone, hence the planned per-kind temperature refit. ~690 ms per decision at ~107
 tokens.
 
-These numbers are with an f16 decision cache. The server's decision context defaults to q4_0 (KL 3.5e-4 vs f16 on 300
-rows, 6 argmax flips, all near-ties, top-2 gap <= ~0.03); q8_0 is KL 2.9e-6 with no flips. Pass the same `-ctk/-ctv` to this tool to
-evaluate what the server runs. f16/q8_0 need `03da0202b`: before it, prompts above ~5.9k tokens could give NaN under
+These numbers are with an f16 decision cache. q8_0 (served in production) is KL 2.9e-6 vs f16 with no flips on 300
+rows; q4_0 (the server's built-in default) is KL 3.5e-4, 6 argmax flips, all near-ties (top-2 gap <= ~0.03). Pass the
+served `-ctk/-ctv` to this tool to evaluate what the server runs. f16/q8_0 need `03da0202b`: before it, prompts above ~5.9k tokens could give NaN under
 `-sm tensor` (a race in the GEMM-attention softmax).

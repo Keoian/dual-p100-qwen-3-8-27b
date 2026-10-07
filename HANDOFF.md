@@ -1,7 +1,8 @@
 # Handoff
 
-Where the work stands, and what's worth doing next. For the project rules and gates, see
-`CLAUDE.md`. For the results and changes, see `p100-docs/`.
+Where the work stands, and what's worth doing next. For the gates, see `tools/gate.sh` and the "Rules" of the
+tyler-port section below (the operator's mission brief lives outside the repo, `/work/CLAUDE.md` on the build box).
+For the results and changes, see `p100-docs/`; to bring the production setup up elsewhere, `p100-docs/deploy/`.
 
 ## Branch `tyler-port` (state 2026-10-07; supersedes the sections below for this branch)
 
@@ -37,6 +38,29 @@ Where the work stands, and what's worth doing next. For the project rules and ga
   calibration split (ECE 0.0031 vs 0.0011 published); (5) Ember routing thresholds; (6) state-prefix reuse across
   decisions (latency); (7) round-1
   leftovers: slot autosave (ask first), fold tile for ~129-383-token batches.
+
+### tyler-port: how to measure (lessons that cost time)
+- Server latency: scripted identical prompts, ABAB order, warm the server first (the first request after a start is
+  slower and can differ); compare the server's own `prompt_ms`, not whole-conversation totals (sampled replies vary).
+- Every kernel change: greedy compare on fixed prompts plus a small-batch KLD (`llama-perplexity -b N -ub N
+  --kl-divergence`), not only llama-bench, which once blessed a kernel that read the wrong buffer.
+- Intermittent NaN or drift: compare identical runs for bit-identity first; nondeterminism in a single-stream kernel
+  chain means a race. memcheck misses host use-after-free and shared-memory ordering races; `CUDA_LAUNCH_BLOCKING=1`
+  deadlocks the host-staged AllReduce; `MALLOC_PERTURB_=165` rules host-heap corruption in or out.
+- Debug symbols without a rebuild: re-run `ninja -t commands bin/libggml-base.so.*` with `-g` into a separate dir and
+  put it first in `LD_LIBRARY_PATH` (it wins over RUNPATH); the same trick A/Bs any library build.
+- Tool shells: `pkill -x llama-server`, never `pkill -f` (it matches the shell's own command line). Long runs in the
+  background with a synced step log (`p100-docs/deploy/diag/monitor.sh` for VRAM/power/PCIe/AER).
+- Thermal/power: benches on hot cards read up to 20% low; alternate A/B order and cool between pairs.
+
+### tyler-port: parked design, slot autosave across restarts (ask the operator before building)
+Slot files are client-driven and the RAM prompt cache dies with the process. Sketched: `--slot-autosave NAME`
+(+ `--slot-autosave-idle S`, ~10 s); restore at startup through the existing slot-restore path (it already restores
+`.draft/.spec/.ckpt`); save when slot 0 has been idle S seconds and changed since the last save, via an idle callback
+in `server_queue::start_loop`'s 1 s wait; snapshot to host synchronously (`llama_state_seq_get_data_ext`), write on a
+background thread in the `llama_state_seq_save_file` format, temp file + rename, best-effort save on SIGTERM. Cost on
+the reference box (share writes 228 MB/s, reads 538 MB/s): ~1.1 GB per save at 26k context (~5 s), ~6 GB at 256k
+(~26 s) -- tens of GB written per day, so a longer idle threshold or save-on-shutdown only may be preferable.
 
 ## State (2026-10-01)
 
@@ -126,10 +150,11 @@ use `tools/pmp/`, an LD_PRELOAD sampler; its header has the usage.
 5. **Short-prompt prefill (time to first token per chat turn).** A 9-127 token prompt takes
    ~0.5 s of GPU at any depth: cuBLAS's 256x128-tile HGEMM at ~4 TFLOPS on a skinny GEMM, plus a
    full f16 dequant of the weights each call (OPTLOG 195). A narrow-tile kernel would help. Any
-   replacement must match ALGO6's accuracy (attempt 153).
+   replacement must match ALGO6's accuracy (attempt 153). Largely done on tyler-port: fp16 mat-vec chunks
+   (`0ff1cd3b1`) and 32/64-column fold tiles (`a8847f5ed`), CHANGES §15.
 6. **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible** (NaN in 4 of 8 runs at
    3 virtual devices). It follows the GEMM attention path. It's debug-only, and two physical GPUs
-   are bit-stable. OPTLOG attempt 153 §8c.
+   are bit-stable. OPTLOG attempt 153 §8c. Probably the softmax `red[]` race fixed in `03da0202b` (not re-run).
 7. **Fuse the all-reduce widen into the ADD** (~+1% prefill). It needs an accumulating-copy path
    in `ggml-backend-meta.cpp`.
 8. ~~`gated_delta_net` in prefill~~: done, chunked (`77e05601d`, +3.8%).

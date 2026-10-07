@@ -2,8 +2,10 @@
 // one row {"id", "n_tokens", "logits", "probs", "ms"} per line out. The backbone LoRA comes from --lora; the head and
 // the calibration from --jev-head / --jev-calib. Each row is decoded from an empty context (no reuse between rows).
 //
-//   llama-jev-decide -m Qwen3.8-27B-UD-Q6_K.gguf --lora jev-27b-lora-f16.gguf -ngl 99 -sm tensor -fa 1
-//       --jev-head head.safetensors --jev-calib calibration.json --jev-in rows.jsonl --jev-out out.jsonl
+//   llama-jev-decide -m Qwen3.8-27B-UD-Q6_K.gguf --lora jev-27b-lora-f16.gguf -ngl 99 -sm tensor -fa 1 -c 8192
+//       -ctk q8_0 -ctv q8_0 --jev-head head.safetensors --jev-calib calibration.json --jev-in rows.jsonl --jev-out out.jsonl
+//       [--jev-hidden h.f32 (raw hidden rows)] [--jev-limit N]
+// Use the decision-cache type the server serves (-ctk/-ctv; the server's --jev-* flags are not accepted here).
 
 #include "arg.h"
 #include "common.h"

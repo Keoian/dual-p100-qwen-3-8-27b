@@ -97,8 +97,8 @@ projector on the second card instead and frees ~850 MiB on GPU0.
 
 **No P2P.** If `nvidia-smi topo -m` shows the cards behind different root ports (e.g. one slot wired to the chipset at
 x4), `cudaDeviceCanAccessPeer` is likely 0 and `GGML_CUDA_P2P=1` does nothing; leave it out. Keep `-sm tensor` (still
-faster than `-sm layer`); this branch stages the exchanges through pinned host memory. Measured on such a board:
-tg256 27.8, pp2048 466, MTP decode in chat 38-40 t/s, a 10-40-token chat turn on a 26k cached prefix in ~0.56 s of
+faster than `-sm layer`); this branch stages the exchanges through pinned host memory. Measured on such a board
+(cards at 180 W; at the 150 W limit that board now needs, tg256 is 26.8): tg256 27.8, pp2048 466, MTP decode in chat 38-40 t/s, a 10-40-token chat turn on a 26k cached prefix in ~0.56 s of
 server prompt time, 256k context with vision without running out of memory. Add `-ctxcp 4`: the server recycles 4
 checkpoint buffers, and each checkpoint copy is ~150 MiB.
 
@@ -111,8 +111,9 @@ request can still turn it on with `"chat_template_kwargs": {"enable_thinking": t
 because a 2875x1500 image is ~4100 tokens and ~19 s before the first byte; capped, ~4 s. The cap is a pixel budget: every
 image is resized to fit it with its aspect ratio kept, so 10 MP images (4380x2285 and a 2592x3888 portrait, tested
 10-07 on the JEV + vision production setup) also came out at ~1,020 tokens, ~5 s, with no extra projector memory. The projector
-(`mmproj-F16.gguf` from the model's GGUF repo) takes ~885 MiB on GPU0; at 256k context with an image GPU0 peaked at
-15.5 of 16.4 GB.
+(`mmproj-F16.gguf` from the model's GGUF repo) takes ~885 MiB on its card (~1.1 GiB with encoder buffers): on GPU0 by
+default (without JEV, at 256k with an image GPU0 peaked at 15.5 of 16.4 GB), on GPU1 with `-mmdev CUDA1` in the JEV
+production setup below.
 
 **Slot save/restore** (`--slot-save-path DIR`, then `POST /slots/0?action=save|restore {"filename": ...}`) writes
 `<name>` plus `<name>.draft` (MTP head cache), `<name>.spec` (MTP carry-over row) and `<name>.ckpt` (context
@@ -126,20 +127,26 @@ server runs, also exactly.
 
 Calibrated one-pass decisions from [autotrust/JEV-27B](https://huggingface.co/autotrust/JEV-27B) on the same loaded
 model. Download only `adapter/`, `head.safetensors`, `calibration.json`, `config.json` (not the bf16 shards), convert
-the LoRA once, then add three flags to the server command:
+the LoRA once (`pip install numpy safetensors`), then add the JEV flags to the server command. JEV was validated only
+**without** `GGML_CUDA_P2P` (on a no-P2P board, at a 150 W power limit); drop `GGML_CUDA_P2P=1` from the command above
+when adding it. The full production command (JEV with a q8_0 decision cache, projector on GPU1) is in
+[deploy/README.md](deploy/README.md); `deploy/start-qwen.sh` runs it.
 
       python3 tools/jev-decide/convert_jev_lora.py --adapter JEV-27B/adapter --config JEV-27B/config.json \
           --outtype f16 --out jev-27b-lora-f16.gguf
 
-      --jev-lora jev-27b-lora-f16.gguf --jev-head JEV-27B/head.safetensors --jev-calib JEV-27B/calibration.json
+      --jev-lora jev-27b-lora-f16.gguf --jev-head JEV-27B/head.safetensors --jev-calib JEV-27B/calibration.json \
+      --jev-ctk q8_0 --jev-ctv q8_0 -mmdev CUDA1     # optional: served cache type, projector off GPU0
 
       curl -s :8090/v1/decide -H 'Authorization: Bearer KEY' -H 'Content-Type: application/json' \
         -d '{"kind":"choice","state":"...","question":"...","options":["A thing","Another thing"]}'
 
-Kinds: `noul` (options `["false","true"]`, may be omitted), `score` (0-5), `choice` (2-16 options, one per line, no
-newlines). The answer has `probabilities`, `choice_index`, `choice`, `confidence`; `"debug": true` adds the raw slot
-logits. Decisions run in their own context (`--jev-ctx 8192`, `--jev-batch 512`), between System 2 batches; System 2
-output is unchanged by them. ~0.6 s per ~100-token decision, ~2 s per ~500 tokens (no state reuse between decisions).
+Kinds: `noul` (options `["false","true"]`, may be omitted), `score` (`"0"`-`"5"`, may be omitted), `choice` (2-16
+options, no newlines in them). `state` is a string or a JSON object (sent as its JSON text). The answer has
+`probabilities`, `choice_index`, `choice`, `confidence`; `"debug": true` adds the raw slot `logits` and the
+`temperature`. Also served at `/decide`. Decisions run in their own context (`--jev-ctx 8192`, `--jev-batch 512`), between System 2 batches; System 2
+output is unchanged by them. ~0.6-0.7 s per ~100-token decision, ~2 s per ~500 tokens (no state reuse between
+decisions).
 
 - **KV type** of the decision context: `--jev-ctk/--jev-ctv`, server default q4_0 (KL 3.5e-4 vs f16). q8_0 is
   practically f16 (KL 3e-6) for ~67 MiB more per GPU; the tyler-port production setup serves q8_0. f16/q8_0 need commit `03da0202b` (before it, long prompts could NaN).
@@ -150,8 +157,10 @@ output is unchanged by them. ~0.6 s per ~100-token decision, ~2 s per ~500 token
   16.2 of 16.4 GB, all requests fine. Not run: 262k with the q4_0 decision cache.
 - **Power.** On the tyler-port board a 262k deep prefill with both cards at 180 W reset the host once; at
   `nvidia-smi -i 0,1 -pl 150` the same run passed. The limit resets on reboot.
-- `llama-jev-decide` (same flags plus `--jev-in/--jev-out` JSONL) evaluates a file of decisions; see
-  `tools/jev-decide/README.md`. Pass `-ctk q4_0 -ctv q4_0` to it to match the server's decision context.
+- `llama-jev-decide` evaluates a JSONL file of decisions. It takes the usual model flags plus `--lora` (not
+  `--jev-lora`), `-c`, `-ctk/-ctv`, and its own `--jev-head`, `--jev-calib`, `--jev-in`, `--jev-out`, `--jev-hidden`,
+  `--jev-limit`; see `tools/jev-decide/README.md`. Pass the served decision-cache type (`-ctk q8_0 -ctv q8_0` for the
+  production setup) to measure what the server runs.
 
 ## Precision switches
 

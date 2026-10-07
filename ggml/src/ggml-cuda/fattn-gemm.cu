@@ -114,6 +114,9 @@ template <> __device__ __forceinline__ float fattn_gemm_store<float>(const float
 // pattern, and there a read-back probability overflows half to inf and NaNs the output -- a
 // 4096-context perplexity run once went NaN in exactly that way and did not reproduce.
 // Cost of the separate buffer: ~1% of the op, and nkv_c*nt*gqa more elements of scratch.
+// Later finding (2026-10-06): the same symptoms -- run-to-run mismatches here, NaN in the fp16 path -- had a second,
+// confirmed cause: red[] below was reused for the row sum without a barrier after the row max was read (see the
+// __syncthreads after vmax = red[0]). Some of the mismatches above were likely that race; out of place stays.
 template <int block_size, typename T>
 static __global__ void fattn_gemm_softmax(
         const T      * __restrict__ S,          // [nkv_c x nt] per head, column-major: scores

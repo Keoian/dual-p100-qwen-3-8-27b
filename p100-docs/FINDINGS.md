@@ -85,16 +85,21 @@ speculative path but −2% on plain decode, so they ship opt-in.
 | MoE `mmid` threshold tuning | no effect | this model is dense. Check the path runs before tuning it |
 | `n_draft` 4 → 6 at depth | +1.9% | acceptance falls from 81% to 70% |
 
-## Two races the op suite couldn't see
+## Three races the op suite couldn't see
 
-Both came from the fork's own work, both are fixed, and both passed all ~14600 `test-backend-ops`
+All came from the fork's own work, all are fixed, and all passed all ~14600 `test-backend-ops`
 cases for weeks. The suite runs ops one at a time with host syncs between them, which is exactly
 the condition under which a cross-stream race can't happen.
 
-1. The GEMM attention softmax wrote probabilities over scores it was still reading. It corrupted
-   a few rows per long prompt and could NaN in fp16.
+1. The GEMM attention softmax wrote probabilities over scores it was still reading (fixed by writing out of
+   place, `cb6024e6b`). It corrupted a few rows per long prompt and could NaN in fp16. Writing out of place made the
+   symptoms rarer but not gone: see 3.
 2. A tensor-parallel peer copy could overwrite the all-reduce buffer before the other card's ADD
    had read it. This hit decode and MTP. With the race forced, acceptance fell from 79% to 43%.
+3. The same softmax reused its shared reduction slots (`red[]`) for the row sum without a barrier after reading
+   the row max (`03da0202b`, 2026-10-06): a late warp could take a partial sum as the max. Run-to-run drift in fp32,
+   NaN in fp16, only on the generic GEMM path (KV types other than q4_0). Found by comparing identical runs
+   (tyler-port Phase 3 below).
 
 Races need repeated unsynchronised runs, deliberate delay injection, or an in-op self-check.
 

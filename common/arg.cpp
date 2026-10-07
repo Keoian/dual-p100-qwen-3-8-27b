@@ -3622,12 +3622,12 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--jev-lora"}, "FNAME",
-        "JEV System 1: backbone LoRA (GGUF), bound only to a separate decision context; enables /v1/decide (default: disabled)",
+        "JEV System 1: backbone LoRA (GGUF), bound only to a separate decision context; enables POST /v1/decide and /decide; needs --jev-head (default: disabled)",
         [](common_params & params, const std::string & value) { params.jev_lora = value; }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--jev-head"}, "FNAME",
-        "JEV System 1: decision head (head.safetensors, proj.weight [24, n_embd] + proj.bias)",
+        "JEV System 1: decision head (head.safetensors, proj.weight [24, n_embd] + proj.bias); required with --jev-lora",
         [](common_params & params, const std::string & value) { params.jev_head = value; }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
@@ -3647,12 +3647,12 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--jev-ctk"}, "TYPE",
-        string_format("JEV System 1: K cache type of the decision context (default: %s)", ggml_type_name(params.jev_type_k)),
+        string_format("JEV System 1: K cache type of the decision context, one of %s (default: %s)", get_all_kv_cache_types().c_str(), ggml_type_name(params.jev_type_k)),
         [](common_params & params, const std::string & value) { params.jev_type_k = kv_cache_type_from_str(value); }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--jev-ctv"}, "TYPE",
-        string_format("JEV System 1: V cache type of the decision context (default: %s)", ggml_type_name(params.jev_type_v)),
+        string_format("JEV System 1: V cache type of the decision context, one of %s (default: %s)", get_all_kv_cache_types().c_str(), ggml_type_name(params.jev_type_v)),
         [](common_params & params, const std::string & value) { params.jev_type_v = kv_cache_type_from_str(value); }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(

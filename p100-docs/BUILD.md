@@ -5,6 +5,11 @@
     git clone -b p100-optimizations https://github.com/Kmic-68/llama.cpp
     cd llama.cpp
 
+For the `tyler-port` branch (boards without P2P, JEV System 1, the fixes of CHANGES §15-16) clone
+`-b tyler-port https://github.com/Keoian/dual-p100-qwen-3-8-27b` instead; [deploy/](deploy/README.md) has its
+container, build script (`build-exp`, Ninja, ccache), pinned downloads and start script. `tools/gate.sh` expects
+`build-opt`: `ln -sfn build-exp build-opt`. The JEV LoRA converter needs `pip install numpy safetensors`.
+
 The release bundle also carries the fork as one diff against the upstream commit it last merged:
 `diffs/all-code.diff`, with the base SHA in `diffs/UPSTREAM-BASE-SHA.txt`. To apply it to a
 clean upstream checkout:
@@ -52,8 +57,8 @@ Two cautions about what a pass means:
 
 - **Run perplexity early.** One change passed 3949/3949 op tests and still produced NaN in real
   inference.
-- **The op suite can't see races.** It runs ops one at a time with host syncs between them. Two
-  races in this fork passed it for weeks.
+- **The op suite can't see races.** It runs ops one at a time with host syncs between them. Three
+  races in this fork passed it (FINDINGS "Three races"). Comparing identical runs for bit-identity catches them.
 
 ## Which build is running
 

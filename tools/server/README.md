@@ -223,6 +223,13 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--props` | enable changing global properties via POST /props (default: disabled)<br/>(env: LLAMA_ARG_ENDPOINT_PROPS) |
 | `--slots, --no-slots` | expose slots monitoring endpoint (default: enabled)<br/>(env: LLAMA_ARG_ENDPOINT_SLOTS) |
 | `--slot-save-path PATH` | path to save slot kv cache (default: disabled) |
+| `--jev-lora FNAME` | JEV System 1: backbone LoRA (GGUF), bound only to a separate decision context; enables POST /v1/decide and /decide; needs --jev-head (default: disabled) |
+| `--jev-head FNAME` | JEV System 1: decision head (head.safetensors, proj.weight [24, n_embd] + proj.bias); required with --jev-lora |
+| `--jev-calib FNAME` | JEV System 1: calibration.json with per-kind temperatures (default: none, T = 1) |
+| `--jev-ctx N` | JEV System 1: context size of the decision context (default: 8192) |
+| `--jev-batch N` | JEV System 1: batch and ubatch size of the decision context (default: 512) |
+| `--jev-ctk TYPE` | JEV System 1: K cache type of the decision context, one of f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1 (default: q4_0) |
+| `--jev-ctv TYPE` | JEV System 1: V cache type of the decision context, one of f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1 (default: q4_0) |
 | `--media-path PATH` | directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled) |
 | `--models-dir PATH` | directory containing models for the router server (default: disabled)<br/>(env: LLAMA_ARG_MODELS_DIR) |
 | `--models-preset PATH` | path to INI file containing model presets for the router server (default: disabled)<br/>(env: LLAMA_ARG_MODELS_PRESET) |
@@ -255,6 +262,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--spec-draft-cpu-strict-batch, --cpu-strict-batch-draft <0\|1>` | Use strict CPU placement for draft model (default: --cpu-strict-draft) |
 | `--spec-draft-prio-batch, --prio-batch-draft N` | set draft process/thread priority : 0-normal, 1-medium, 2-high, 3-realtime (default: 0) |
 | `--spec-draft-poll-batch, --poll-batch-draft <0\|1>` | Use polling to wait for draft model work (default: --poll-draft) |
+| `--spec-draft-ubatch-size, -ubd, --ubatch-size-draft N` | physical batch size for the draft context (default: 0, 0 = same as the target)<br/>at long context the draft's compute buffer is dominated by its KQ mask<br/>(n_kv x n_ubatch x 2 bytes), so a narrow draft ubatch frees VRAM without<br/>affecting target prefill throughput<br/>(env: LLAMA_ARG_SPEC_DRAFT_UBATCH_SIZE) |
 | `--spec-draft-override-tensor, -otd, --override-tensor-draft <tensor name pattern>=<buffer type>,...` | override tensor buffer type for draft model |
 | `--spec-draft-cpu-moe, -cmoed, --cpu-moe-draft` | keep all Mixture of Experts (MoE) weights in the CPU for the draft model<br/>(env: LLAMA_ARG_SPEC_DRAFT_CPU_MOE) |
 | `--spec-draft-n-cpu-moe, --spec-draft-ncmoe, -ncmoed, --n-cpu-moe-draft N` | keep the Mixture of Experts (MoE) weights of the first N layers in the CPU for the draft model<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE) |
@@ -1239,6 +1247,46 @@ To know the `id` of the adapter, use GET `/lora-adapters`
   {"id": 1, "scale": 0.8}
 ]
 ```
+
+### POST `/v1/decide` (alias `/decide`): JEV System 1 decision
+
+Available when the server is started with `--jev-lora` and `--jev-head` (and optionally `--jev-calib`, `--jev-ctx`,
+`--jev-batch`, `--jev-ctk`, `--jev-ctv`). Runs one calibrated decision of [autotrust/JEV-27B](https://huggingface.co/autotrust/JEV-27B)
+(a backbone LoRA plus a 24-slot head) in a separate context on the loaded model. The LoRA is bound to that context
+only: generation requests, their slots, checkpoints, prompt cache and speculative state never see it. Decisions run on
+the server's main loop, between generation batches. Converting the adapter: `tools/jev-decide/README.md`.
+
+**Request format**
+
+| field | type | meaning |
+|---|---|---|
+| `kind` | string | `noul` (yes/no), `score` (0-5) or `choice` |
+| `state` | string or object | the situation; an object is sent as its JSON text; images are not supported |
+| `question` | string | required |
+| `options` | array of strings | `choice`: 2-16 options without newlines; `noul` must be `["false","true"]` and `score` `["0".."5"]` if given (may be omitted) |
+| `debug` | bool | also return the raw slot `logits` and the `temperature` |
+
+The prompt is the `bare-v1` template (`[kind] ... [state] ... [question] ... [options] ... [decision]:`), tokenized as
+one string without BOS. It must fit `--jev-ctx` (default 8192 tokens).
+
+```json
+{"kind": "choice", "state": "The build passed PPL but MTP restore diverges.",
+ "question": "Which experiment should run next?",
+ "options": ["Disable CUDA graphs", "Compare recurrent state before and after restore", "Increase MTP draft length"]}
+```
+
+**Response format**
+
+```json
+{"kind": "choice", "effective_kind": "choice", "options": ["..."], "probabilities": [0.02, 0.97, 0.01],
+ "choice_index": 1, "choice": "Compare recurrent state before and after restore", "confidence": 0.97,
+ "adaptation": "native", "protocol": "jev27-bare-v1", "system": 1, "adapter": "jev-system1", "model": "...",
+ "usage": {"prompt_tokens": 78, "completion_tokens": 0, "total_tokens": 78},
+ "elapsed_seconds": 0.63, "num_model_requests": 1}
+```
+
+Errors: 400 for an invalid request (bad `kind`, options, or a prompt longer than `--jev-ctx`), 501 when the server was
+started without `--jev-lora`.
 
 ## OpenAI-compatible API Endpoints
 

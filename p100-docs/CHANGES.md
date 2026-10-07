@@ -390,7 +390,7 @@ Kmic-68/llama.cpp `p100-optimizations`): bench `PR_fattn_gemm_softmax_race.md`.
 
 **System-1 KV type.** Accuracy against an f16 decision cache on 300 test rows: q8_0 KL 2.9e-6, 0 argmax flips; q4_0
 KL 3.5e-4, 6 flips (all near-ties, top-2 gap <= ~0.03). Since `03da0202b` f16 and q8_0 are NaN-free; the default
-stays q4_0 (operator's choice, smallest), q8_0 is the accuracy option (+~67 MiB per GPU at 8k), not chosen yet.
+stays q4_0 (smallest), q8_0 is the accuracy option (+~67 MiB per GPU at 8k), chosen 10-07 for the served setup.
 
 **Full-depth check with the served configuration (10-07).** 262k context, MTP, projector on GPU1 (`-mmdev CUDA1`),
 JEV with a **q8_0** decision cache, P2P off, 150 W: a chat filled to 255,168 tokens with a decision after each of 9
@@ -432,7 +432,7 @@ both cards sat at their 180 W cap together (371 W peak). Cost of the cap: tg256 
   only), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens, ~2 s at
   ~500). Full depth with JEV + image passed with the q8_0 decision cache (served default); q4_0 at 262k not run.
 - **Slot state does not survive a restart by itself.** Disk slot files are client-driven (`/slots/0?action=save|restore`);
-  the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (bench HANDOFF 5.1).
+  the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (root HANDOFF.md, "parked design").
 - **Prefill attention accumulation.** With a q4_0 cache the fold path (`GGML_CUDA_FA_FOLD`,
   default on, OPTLOG 225) accumulates QK^T in fp16 chains of 128 summed in fp32, and PV in fp16
   over 128 keys, fp32 across them. `GGML_CUDA_FA_FOLD=0` returns to the cuBLAS path (fp16 over the

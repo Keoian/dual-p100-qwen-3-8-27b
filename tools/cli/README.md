@@ -194,6 +194,7 @@
 | `--spec-draft-cpu-strict-batch, --cpu-strict-batch-draft <0\|1>` | Use strict CPU placement for draft model (default: --cpu-strict-draft) |
 | `--spec-draft-prio-batch, --prio-batch-draft N` | set draft process/thread priority : 0-normal, 1-medium, 2-high, 3-realtime (default: 0) |
 | `--spec-draft-poll-batch, --poll-batch-draft <0\|1>` | Use polling to wait for draft model work (default: --poll-draft) |
+| `--spec-draft-ubatch-size, -ubd, --ubatch-size-draft N` | physical batch size for the draft context (default: 0, 0 = same as the target)<br/>at long context the draft's compute buffer is dominated by its KQ mask<br/>(n_kv x n_ubatch x 2 bytes), so a narrow draft ubatch frees VRAM without<br/>affecting target prefill throughput<br/>(env: LLAMA_ARG_SPEC_DRAFT_UBATCH_SIZE) |
 | `--spec-draft-override-tensor, -otd, --override-tensor-draft <tensor name pattern>=<buffer type>,...` | override tensor buffer type for draft model |
 | `--spec-draft-cpu-moe, -cmoed, --cpu-moe-draft` | keep all Mixture of Experts (MoE) weights in the CPU for the draft model<br/>(env: LLAMA_ARG_SPEC_DRAFT_CPU_MOE) |
 | `--spec-draft-n-cpu-moe, --spec-draft-ncmoe, -ncmoed, --n-cpu-moe-draft N` | keep the Mixture of Experts (MoE) weights of the first N layers in the CPU for the draft model<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE) |
