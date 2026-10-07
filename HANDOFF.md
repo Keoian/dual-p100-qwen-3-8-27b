@@ -34,8 +34,8 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
 - **Next steps:** (1) re-run the System 2 determinism/latency harnesses with JEV loaded (greedy reference, MTP restore,
   RAM cache, Ember TTFT; not run since Phase 3); (2) full `test_set_30k` eval with the served
   decision-cache type (on hold); (3) open the PR to Kmic for `03da0202b` (not opened; run the brief's perplexity repro
-  first, it is unverified); (4) temperature refit on the
-  calibration split (ECE 0.0031 vs 0.0011 published); (5) Ember routing thresholds; (6) state-prefix reuse across
+  first, it is unverified); (4) check the temperatures on the full set
+  (3k ECE 0.0031 scales to ~0.0010 at the published 30k size, so a refit is probably unnecessary); (5) Ember routing thresholds; (6) state-prefix reuse across
   decisions (latency); (7) round-1
   leftovers: slot autosave (ask first), fold tile for ~129-383-token batches.
 

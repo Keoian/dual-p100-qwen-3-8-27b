@@ -50,8 +50,9 @@ Stratified 3,000-row subset of `test_set_30k` (1,000 per kind), against the publ
 | openjev_v2 / noul (n=121) | 0.0065 | 0.003 | 1.000 | 0.999 |
 | openjev_v2 / choice (n=111) | 0.173 | 0.146 | 0.928 | 0.885 |
 
-Reweighted to the full set's composition: KL ~0.0195 vs 0.0185. ECE (15 bins, soft) 0.0031 vs 0.0011 published:
-calibration is ~3x off on this backbone, hence the planned per-kind temperature refit. ~690 ms per decision at ~107
+Reweighted to the full set's composition: KL ~0.0195 vs 0.0185. ECE (15 bins, soft) 0.0031 vs 0.0011 published,
+but on 3,000 vs 29,955 rows: ECE shrinks ~1/sqrt(n), which scales ours to ~0.0010 at the published size (no evidence
+of worse calibration; the full-set run would confirm). ~690 ms per decision at ~107
 tokens.
 
 These numbers are with an f16 decision cache. q8_0 (served in production) is KL 2.9e-6 vs f16 with no flips on 300

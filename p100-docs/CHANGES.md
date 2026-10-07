@@ -401,7 +401,9 @@ projector on GPU0 instead would mirror the VRAM split, not improve it.
 
 **Latency and calibration.** A decision costs ~0.6 s at ~100 tokens and ~2 s at ~500 (1.7-3.0 s for 456-778 tokens with
 System 2 at 28k-226k depth): each decision re-encodes its state. ECE on the 3k subset is 0.0031 vs 0.0011 published
-(UD-Q6_K backbone, f16 decision cache), the reason for the planned temperature refit.
+on 29,955 rows; ECE shrinks ~1/sqrt(n) (bootstrap of our results: 0.0081 at 500 rows, 0.0062 at 1,000, 0.0043 at
+3,000), so scaled to the full set it is ~0.0010: no evidence of worse calibration on UD-Q6_K. The full 30k eval would
+confirm it; a temperature refit is a check, not a known need.
 
 **Host reset on this board.** One hard reset (no log) came ~30 s into a deep prefill at 262k with JEV loaded; both
 P100s were at their 180 W cap together (371 W). It did not reproduce at <= 64k (incl. memcheck, VRAM pressure, the
@@ -428,7 +430,7 @@ both cards sat at their 180 W cap together (371 W peak). Cost of the cap: tg256 
   place the end-of-prompt checkpoint; the obvious fix (read it from the MTP rollback snapshot) breaks replay identity.
   Batches of ~129-383 tokens still pay for 128-column fold tiles (cuBLAS ALGO6 is 14% faster at 300, less accurate).
 - **JEV System 1 (tyler-port §16).** 17-256 options (the vLLM lm_head-LoRA form) not implemented, images in the
-  decision state not supported, temperatures not refit for UD-Q6_K yet, the full 30k evaluation not run (3k subset
+  decision state not supported, temperatures not re-checked on the full set, the full 30k evaluation not run (3k subset
   only), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens, ~2 s at
   ~500). Full depth with JEV + image passed with the q8_0 decision cache (served default); q4_0 at 262k not run.
 - **Slot state does not survive a restart by itself.** Disk slot files are client-driven (`/slots/0?action=save|restore`);
