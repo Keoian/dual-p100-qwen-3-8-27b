@@ -2204,6 +2204,16 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
         return;
     }
+    // Pascal: 9..16 columns (parallel slots' verify batches together) on the fp16 matvec, not MMQ,
+    // which without DP4A takes ~4x as long (a 10-token pass: 398 ms vs 93 at 8 tokens). Not for matrices
+    // the GEMM path computes in fp32 (fewer than GGML_CUDA_GEMM_FOLD_MINROWS rows): there the fp16 matvec
+    // (NMSE ~5e-7) would be less exact than what it replaces (~1e-14).
+    if (ne11 > MMVQ_MAX_BATCH_SIZE && !ggml_cuda_gemm_fold_wants_f32(ctx, src0, src1, dst) &&
+            ggml_cuda_mmvq_f16_try(ctx, src0, src1, dst, ne11)) {
+        return;
+    }
+    // tyler-port: above that, q6_K/q5_K up to GGML_CUDA_MMVQ_CHUNK_MAX (28) columns as fp16 matvec column
+    // chunks (mmvq.cu); wider batches go to the fold GEMM's 32/64/128-column tiles
     if (ggml_cuda_mul_mat_vec_q_chunked(ctx, src0, src1, dst)) {
         return;
     }
@@ -3999,6 +4009,13 @@ static bool ggml_cuda_try_gdn_state_gather(const ggml_cgraph * cgraph, int i) {
             node->src[1]->ne[0] != node->ne[1]) {
         return false;
     }
+    // one sequence only: with several, the delta net's blocks for one sequence can read a state row
+    // that another sequence's blocks write (the gather's source rows are cache cells, and the new states
+    // go back into the cache), which the chunked kernel does. Multi-slot prefill read wrong states:
+    // KLD 0.044 against one sequence at a time, 0.0019 with the copy (OPTLOG multi-slot).
+    if (node->ne[1] != 1) {
+        return false;
+    }
     const ggml_tensor * aliases[8] = { node };
     int n_alias = 1;
     auto is_alias = [&](const ggml_tensor * t) {
@@ -4824,6 +4841,23 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         if (jo > 0) {
             ggml_tensor * mm = cgraph->nodes[jm], * sl = cgraph->nodes[js], * mo = cgraph->nodes[jo];
             auto base = [](const ggml_tensor * t) { return t->view_src ? t->view_src : t; };
+            // The fused order runs the matmul before the norm, but the allocator planned memory for the
+            // graph order: once the norm has read x, x's buffer is free and the matmul's output may be put
+            // there. Running the matmul first would then overwrite x before the norm reads it. Which
+            // buffers alias depends on the tensor sizes, so it broke only some ubatch sizes (256..384
+            // tokens: PPL ~10^4). Likewise the output may take x's buffer: fine in place with the same
+            // layout (each block reads its whole row before writing it), not otherwise.
+            auto overlap = [](const ggml_tensor * a, const ggml_tensor * b) {
+                const char * a0 = (const char *) a->data, * b0 = (const char *) b->data;
+                return a0 < b0 + ggml_nbytes(b) && b0 < a0 + ggml_nbytes(a);
+            };
+            const ggml_tensor * xin = node->src[0];
+            auto same = [](const ggml_tensor * a, const ggml_tensor * b) {
+                return a->data == b->data && ggml_are_same_shape(a, b) && ggml_are_same_stride(a, b);
+            };
+            const bool alias_ok = !overlap(mm, xin) &&
+                (!overlap(mo, mm)  || same(mo, mm)) &&
+                (!overlap(mo, xin) || same(mo, xin));
             if (mm->op == GGML_OP_MUL_MAT && sl->op == GGML_OP_UNARY && ggml_get_unary_op(sl) == GGML_UNARY_OP_SILU &&
                     mo->op == GGML_OP_MUL && (mm->flags & GGML_TENSOR_FLAG_COMPUTE) && (sl->flags & GGML_TENSOR_FLAG_COMPUTE) &&
                     (mo->flags & GGML_TENSOR_FLAG_COMPUTE) &&
@@ -4832,7 +4866,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                     base(mm->src[0]) != node && base(mm->src[1]) != node && base(mm->src[0]) != mulw && base(mm->src[1]) != mulw &&
                     ggml_node_get_use_count(cgraph, i + 1) == 1 && ggml_node_get_use_count(cgraph, js) == 1 &&
                     !(mulw->flags & GGML_TENSOR_FLAG_OUTPUT) && !(sl->flags & GGML_TENSOR_FLAG_OUTPUT) &&
-                    ggml_cuda_op_rms_norm_mul_silu_gate(*cuda_ctx, node, mulw, sl->src[0], mo, true)) {
+                    alias_ok && ggml_cuda_op_rms_norm_mul_silu_gate(*cuda_ctx, node, mulw, sl->src[0], mo, true)) {
                 GGML_ASSERT(ggml_cuda_compute_forward(*cuda_ctx, mm));
                 ggml_cuda_op_rms_norm_mul_silu_gate(*cuda_ctx, node, mulw, sl->src[0], mo, false);
                 return jo - i;
@@ -4847,8 +4881,8 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     // The FFN's gate and up matvecs and their SWIGLU, in one launch (verify widths, fp16 path):
     //   MUL_MAT(up) -> MUL_MAT(gate) -> GLU(SWIGLU, gate, up), in either matvec order, views between.
-    if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_Q6_K && node->ne[0] >= 3072 &&
-            node->ne[1] >= 2 && node->ne[1] <= 5) {
+    if (node->op == GGML_OP_MUL_MAT && ggml_is_quantized(node->src[0]->type) && node->ne[0] >= 3072 &&
+            node->ne[1] >= 2 && node->ne[1] <= MMVQ_F16_MAX_COLS) {
         const int n = cgraph->n_nodes;
         auto next = [&](int j) {
             for (++j; j < n; ++j) {

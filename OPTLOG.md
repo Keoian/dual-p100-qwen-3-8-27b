@@ -9079,7 +9079,224 @@ Questions at 260k in this staircase prefill at 111-141 t/s (hot, after checkpoin
 ~153 for the restore-mode 1479-token question; the 09-26 release showed the same gap (100 vs 120).
 My earlier 18.5 min fill estimate (272) was low; measured 24.9.
 
-## 275 — branch `tyler-port`, summary entry (2026-10-04 to 10-06)
+## 275 — parallel agents: goal and first measurements (2026-10-02)
+
+Goal from the user: one manager agent at 262k (mostly idle) and up to two worker agents at ~64k
+each, sharing the weights; two decode at once; 40-50 t/s per agent with MTP; solo unchanged. Workers
+are spawned and killed, so their KV should exist only while they do.
+
+Per-pass cost by batch width before any change (llama-batched-bench, 512-token prompts, pass ms):
+B1 31.3, B5 54.9, B6 72.2, B8 93.2, **B10 398**, B15 457. Past 8 columns q6_K left the fp16 matvec
+for MMQ, which without DP4A is ~4x slower; 6..8 ran the integer mmvq. Two agents x (1 + 4 drafts)
+= 10 columns, so two agents with MTP were slower in total than one.
+
+## 276 — fp16 q6_K matvec for 6..16 columns (mmvq-f16.cu): kept
+
+The 2-5 column kernel extended: 6..12 columns per launch with 4 rows x 1 warp x 8 blocks/SM (the
+2-warp tile's 168 registers spill past 8 columns: 8704x5120 at 10 columns 367 us -> 213), wider
+batches split into two launches over column halves (columns are independent: identical results).
+9..16 columns route here instead of MMQ (ggml-cuda.cu), the fused FFN gate/up/SWIGLU and GDN gate
+take up to 16. NC 2..5 keep their exact kernels. Harness sweep (mmvq-harness, 8704x5120, us):
+
+| cfg (rows x warps x blocks/SM) | n=6 | 8 | 10 | 12 | 14 | 16 |
+|---|---|---|---|---|---|---|
+| 4x2x6 (2..5 col config) | 145 | 181 | 367 | 609 | 919 | 1648 |
+| 4x1x8 (kept, <=12) | 147 | 172 | 213 | 245 | 317 | 443 |
+| 2x4x3 | 178 | 224 | 278 | 328 | 369 | 554 |
+
+Whole model (batched-bench, pass ms): B8 93 -> 77, B10 398 -> 92, B12 -> 108, B15 457 -> 149.
+Shared-memory activation staging (all warps of a block share x) was slower (n=8 270 us): the
+per-column cost is not L2. HFMA2 runs at full rate here (64 lanes/clk/SM microbench); the kernel
+reaches ~1/3 of it per added column. Eval: new q6_K cases at 6..16 columns for 8704/6150/3072/
+512/300/24/20 rows, GLU fusion 6/10/13/16, GDN gate 8/10/16: all pass.
+
+Server, 2 slots (-np 2, 131k each), MTP, short prompts: 37-45 t/s per agent (solo 67-72 on the same
+prompts); 3 slots 20-29 each. Greedy output with a second request in flight matches solo for 1073
+of 1178 chars, then rounding drift; both coherent.
+
+## 277 — FIX: fused norm+gate overwrote its input at some ubatch sizes (shipped bug): kept
+
+Found while checking multi-sequence perplexity: **solo** perplexity with -ub 256/320/384 read
+PPL 10751/26998/305532 (128, 448, 512, 640, 768 fine), on this build and on the 10-01 release.
+GGML_CUDA_FUSE_NORM_GATE=0 fixed it. The fusion runs the gate matmul before the RMS norm, but the
+allocator planned memory for graph order: once the norm has read x, x's buffer may hold the
+matmul's output, so the reordered matmul overwrote x first. Sizes decide the aliasing. Fix: fuse
+only when the matmul output does not overlap x, and the output aliases x or the matmul only with an
+identical layout. -ub 512 PPL unchanged to the digit (3.3551); 256/320/384 now 3.3551/3.3645/3.3542.
+A server prompt whose last partial ubatch fell in that range could have been hit.
+Also seen, not fixed: GGML_CUDA_FUSE_FFN_GLU=0 and GGML_CUDA_DISABLE_FUSION=1 abort at
+ggml-cuda.cu GGML_ASSERT(!ggml_cuda_gemm_fold_glu_pending()) in prefill; -sm layer reads PPL 28.5
+solo (tensor split is the only tested mode).
+
+## 278 — FIX: GDN state gather raced across sequences (multi-sequence prefill): kept
+
+After 277, 3 parallel perplexity sequences still read KLD 0.044 (top-1 93.7%) against one at a time;
+a harmless path change (-ub 448) reads 0.0013. The reference fork build d886a5eb9 (build-stock) reads
+its own noise floor for 3 sequences (0.0073, same as its -ub 448). GDN_CHUNKED=0 or GDN_GATHER=0 ->
+0.0019. The gather fusion lets the delta net read recurrent states from the cache through the index;
+with several sequences one sequence's blocks can read a cache row another's blocks write. Now one
+sequence only (the copy for several is ~0.3 ms per pass). 3 sequences: KLD 0.001929, top-1 98.5%.
+
+## 280 — generic fp16 multi-column matvec for every other weight type (mmvq-f16.cu): kept
+
+One kernel (`mmvq_f16_gen`) plus an 8-weight unpack per type, written from ggml's reference
+dequantization: q4_0, q4_1, q5_0, q5_1, q8_0, iq4_nl, iq4_xs, q2_K, q3_K, q4_K, q5_K. q6_K keeps its
+own kernel (solo path untouched). Shares the prescaled fp16 activation, its cache, the per-window
+fp16 chains folded into fp32, and the column split. Each warp stages its rows' window bytes in shared
+memory with 16-byte loads (the first version, loading per chunk from global, ran 1.3-2.2x slower
+than the integer path). GLU fusion works for every type; the GDN-gate fusion stays q6_K-only.
+Codebook i-quants (IQ1/IQ2/IQ3) stay on the integer path.
+
+Correctness: test-backend-ops, new eval cases for all 11 types at 2..16 columns, a partial row block,
+K off the 1024 window, small rows and the fused GLU: MUL_MAT 1481/1481, fusion and per-type 742/742.
+
+Speed, 8704x5120 per GPU, us (fp16 generic / integer, test-backend-ops):
+
+    type    n=2          n=4          n=5          n=8          n=10 (integer side = MMQ)
+    q5_K    136 / 134    158 / 213    175 / 247    247 / 349    350 / ~1470
+    q4_K    -            141 / 201    178 / 236    234 / 337    357 / ~1580
+    q3_K    126 / 139    152 / 210    154 / 250    230 / 346    307 / ~1475
+    q4_0    108 / 86     157 / 124    140 / 145    260 / 205    280 / ~1400
+    q8_0    118 / 126    175 / 174    211 / 196    243 / 275    421 / ~1150
+    iq4_xs  126 / 94     177 / 136    -            217 / 208    372 / ~1420
+
+Routing follows the crossover: q2_K/q3_K from 2 columns, q4_K/q5_K from 3, the rest only above 8
+(where the integer side is MMQ). GGML_CUDA_MMVQ_F16_GEN_MIN overrides it for measurement. At 1
+column the generic kernel ties the integer path on q5_K (115 vs 112 us) and wins on q2_K (70 vs 116)
+and q3_K (100 vs 117); not routed yet.
+
+Model level, Q5_K_M requantized from the Q6_K (scratch/quants, test fixture only): -ub 5, 2 chunks,
+gate corpus: PPL 3.9476 integer vs 3.9452 fp16, wall time 2:20 -> 1:49.
+tg256 on that file: 27.12 t/s (Q6_K 32.43). The single-column q5_K path is upstream's (vec_dot_q5_K,
+emulated dp4a, mins via extra dp4a); q6_K's was hand-tuned. Open.
+
+## 281 — Pascal single-column integer dot products for every other type (vecdotq-p100.cuh): kept
+
+Three subagents, one per type family, taking turns on the GPU under a lock
+(/mnt/fast/p100-scratch/mc/lock.sh). New `vec_dot_<t>_q8_1_p100` functions live in
+`vecdotq-p100.cuh`, which only mmvq.cu includes. The sm_60-only dispatch is in mmvq.cu, with per-type
+geometry helpers: `p100_leg_*`, `p100_kq23_*` and `P100_KQ45_*`. q6_K's geometry and dot product are
+unchanged.
+
+Single column, 8704x5120, us (before -> after, GB/s after):
+
+    q4_0 72.6->55.5 (452)   q4_1 72.9->61.1 (457)   q5_0 98.9->70.9 (432)   q5_1 97.0->69.4 (482)
+    q8_0 112.5->97.8 (485)  iq4_nl 85.0->64.4 (389) iq4_xs 76.9->64.9 (366)
+    q2_K 114.9->62.0 (236)  q3_K 117.1->71.1 (269)  q4_K 101.4->64.0 (392)  q5_K 111.9->77.1 (397)
+
+The integer multi-column path (2..8) got faster too. fp16 crossovers re-measured afterwards:
+q2_K >= 3, q4_K/q5_K >= 4, q3_K >= 5; the rest only above 8.
+The integer sums are exact. The float grouping changed for all types except iq4_xs.
+
+Gates (2026-10-02 night):
+- Q6_K tg256 ABAB new/release: 32.36/32.03, 31.78/31.53. PPL 2.6101. FA eval 3/3.
+- Q6_K KLD vs release at -ub 1 and -ub 5: mean 0, max 0.000053. The release against its own base
+  reads the same max (the base's storage floor), so the solo path is identical.
+- All-types model (scratch/quants/Qwen3.8-27B-zoo-rq.gguf: Q5_K_M base with layers {2..11}+{0,16,32}
+  in q4_0 q4_1 q5_0 q5_1 q8_0 iq4_nl iq4_xs q2_K q3_K q4_K), new vs release, 1 chunk:
+  -ub 1: KLD 0.003334, PPL ratio 0.9981 ± 0.0019, same top 96.6%.
+  -ub 5: KLD 0.003234, PPL ratio 1.0010 ± 0.0018, same top 96.9%.
+  These are float-reordering differences; PPL is unchanged within error.
+- Full op suite (10-03 rerun, cold cards): 16521/16521, 3/3 backends; same run tg256 32.70 ± 0.16,
+  PPL 2.6101.
+
+Q5_K_M (requantized fixture) after 280+281, 10-03, warm cards, ABBA against the 10-01 release:
+| | release | this build |
+|---|---|---|
+| tg256 | 27.03 / 26.70 | 33.78 / 33.27 (+25%; Q6_K reads 32.70) |
+| MTP decode (n-max 4, p-min 0.2, quicksort prompt) | 51.98 / 51.93 | 67.67 / 67.43 (+30%), accept 87.1% |
+Q6_K on the same MTP prompt: 81.39 (accept 85.2%). Q5_K_M now decodes faster than Q6_K but verifies
+slower: 5 columns of q5_K run the generic fp16 kernel, q6_K its hand-scheduled one. That gap is the
+round-2 target below (hand-scheduled multi-column q4_K/q5_K).
+Round 2 candidates:
+- The shared mmvq staging loop recomputes each row's address every trip (~25-30 instr/row; helps
+  every type).
+- Prefetch or double-buffer the stage (q2_K/q3_K bound there).
+- The iq4 lookup (10 PRMT per 8 weights).
+- Hand-scheduled multi-column kernel for q4_K/q5_K.
+
+Committed as six pieces on goal/multi-agent (10-03):
+1. mmvq-f16 6..16 columns.
+2. The norm+gate alias fix.
+3. The GDN gather fix.
+4. Sized streams + server.
+5. The generic fp16 kernel (280).
+6. The Pascal dot products (281).
+
+## 282 — every quant's fp16 multi-column kernel hand-scheduled + integer staging loop hoisted: kept
+
+10 Sonnet agents in parallel (all stopped at the account's usage limit; the lead harvested their last
+kernel files). New fast loop: /mnt/fast/p100-scratch/hx (hx.cu harness for any type: ggml-quantized
+random weights, double reference, NMSE, median µs, output checksum; ~1 min build, seconds per run;
+per-GPU locks). Merged into mmvq-f16.cu: dedicated kernels for q5_K, q4_K, q2_K/q3_K, q4_0/q8_0, q4_1
+(+q5_1 from 8 columns), iq4_nl/iq4_xs, mxfp4, and new fp16 support for iq2_xxs/xs/s, iq3_xxs/s,
+iq1_s/m. Routing per type from data (`mmvq_f16_gen_takes`): 1 column always integer; fp16 from 2
+columns for q2_K/q4_K/q5_K/mxfp4, from 3 for q3_K/q8_0, 2-3 for q4_0, above 8 for the rest.
+mmvq.cu: the staging loop's per-row address math is computed once (agent stg); output bit-identical.
+
+Harness, 8704x5120 µs, before → after (fp16 kernel):
+| type | n=1 | n=2 | n=5 | n=8 | n=16 |
+|---|---|---|---|---|---|
+| q5_K | 126 → 68 | 142 → 78 | 175 → 129 | 253 → 196 | 502 → 390 |
+| q4_K | 113 → 57 | 122 → 61 | 185 → 119 | 244 → 196 | 482 → 390 |
+| q2_K | 76 → 58 | 96 → 67 | 145 → 107 | 214 → 152 | 429 → 305 |
+| q3_K | 110 → 73 | 135 → 91 | 151 → 130 | 235 → 187 | 476 → 372 |
+| q8_0 | 110 → 101 | 115 → 105 | 216 → 162 | 240 → 236 | 480 → 469 |
+Integer n=1 (staging hoist): q6_K 82.5 → 79.9 (5120x8704), q5_K 77.1 → 73.6, q4_K 64.0 → 61.5,
+q3_K 73.5 → 69.4, iq4_xs 66.3 → 61.7 (8704x5120).
+Q5_K_M (requantized fixture): tg256 33.5 → 33.98; MTP decode 67.5 → 78.4 t/s (accept 87.1%; Q6_K 81.4).
+Checks: MUL_MAT eval for the new shapes 200/200, MUL_MAT_VEC_FUSION 1338/1338; Q6_K KLD vs the 10-01
+release at -ub 1: mean 0, max 0.000053 (storage floor) = identical; zoo (q4_0..q4_K layers on Q5_K_M)
+-ub 5 vs release: KLD 0.003254, ln PPL ratio 0.0007 ± 0.0018 (the previous build read 0.003234).
+Gate: tg256 32.39 ± 0.19 (warm cards, 59 C), PPL 2.6101, full suite 16658/16658.
+Not done: integer single-column ports for iq2/iq3/iq1/mxfp4 (agents stopped first; stock integer
+path there), whole-model KLD for zoo2 (iq3/iq2_s/iq1_m/mxfp4 layers, baked at
+/mnt/fast/p100-scratch/quants), the agents' sweep macros left at defaults in mmvq-f16.cu.
+
+## 283 — no-regression pass over every type and width: kept
+
+test-backend-ops perf, every type x n=1..16 x {8704x5120, 5120x8704, 512x5120}, against the morning's
+baseline (/mnt/fast/p100-scratch/hx/baseline.txt, cmp.py). After 282, 21 cases were >3% slower. Fixes:
+- mmvq.cu: the hoisted staging loop (282) only for one column; several columns keep the original
+  loop (q4_0 n=5 124 -> 134, q4_1 n=2/8, iq1_m n=4, q3_K n=2 had slowed 3-7%). Same results.
+- mmvq-f16.cu: rows < 1024 at 5+ columns keep the generic kernel for q2_K..q5_K (the dedicated
+  kernels lost on 512-row matrices there); iq4 kernels only below 15 columns; q8_0 fp16 at 3..5 only.
+Result: nothing >3% slower anywhere (worst 1.038 on q8_0 before its fix, then under baseline).
+Geo-mean new/old per type: mxfp4 0.58, iq1_s 0.71, iq1_m 0.71, iq3_s 0.72, iq3_xxs 0.74, iq2_xs 0.78,
+iq2_s 0.79, q2_K 0.80, q4_K 0.81, q5_K 0.82, iq2_xxs 0.84, q8_0 0.84, q4_1 0.86, q3_K 0.89, q4_0 0.92,
+q5_1 0.92, iq4_nl 0.98, iq4_xs 0.98, q5_0 0.99, q6_K 1.00 (unchanged).
+Gate: tg256 32.99 ± 0.15 (cold; the gate's own run read 26.50 ± 2.94 straight after four KLD
+perplexity passes), PPL 2.6101, full suite 16658/16658. KLD vs the 10-01 release: Q6_K -ub 1 mean 0
+(max 0.000053), -ub 5 mean 0 (max 0.000059) = identical; zoo -ub 1 0.003334, -ub 5 0.003442.
+
+## 284 — q5_K multi-column kernel: per-shape geometry + per-half-window fold at 7+ columns: kept
+
+Server test on the user's Q5_K_M with the 3-slot layout (--kv-slot-sizes 262144,65536,65536, qwen-server
+flags, model-card sampling temp 1.0 / top-k 20 / top-p 0.95, 512-token answers): two agents decoding
+together got 27-28 t/s each vs Q6_K's 37 (Q6_K cannot start the third slot: VRAM guard). The host only
+waits on the GPU; drafts for both slots are already one batch; the cycle is the 10-column verify pass.
+Draft n_max 2/3/4 made no difference. batched-bench B10 pass: Q5_K_M 127 ms, Q6_K 99 ms. Cause: the q5_K
+kernel ran one geometry (4 rows x 2 warps x 6 blocks/SM) at every width; past 8 columns it spilled
+(168 regs, 136-232 B stack), so q5_K at 10 columns was 344 us vs q6_K 197 (8704x5120).
+
+1. Geometry from the k5s sweep (mmvq_f16_q5_K_pick): rows < 256 K-split 1x4x3 (GLU 2x1x16); rows < 1024
+   2x2x8 up to 5 columns, 2x1x16 above; else 4x2x6 at 1-2 columns, 4x1x8 above. q5_K no longer drops to
+   the generic kernel for small rows at 5+ columns. Big shapes bit-identical (same checksums).
+   Harness, us: 8704x5120 n=10 312 -> 229, n=12 472 -> 260; 24x5120 n=10 48 -> 12; 512x5120 n=10 48 -> 27.
+   B10 pass 127 -> 100 ms. Server, two agents: 28 -> 33-35 t/s each.
+2. FOLD (NC >= 7 on the 4-row tile): each lane folds its 8-HFMA2 half-window chain into fp32 at once
+   instead of holding NC*RPW half2 chains over the whole window. Same 4x1x8 geometry (capping registers
+   lower, 10 or 12 blocks/SM, spills and loses). NMSE 1.14e-6 -> 8.4e-7 (shorter fp16 chains). Fewer
+   columns keep the window-long chains (fold was 1-5% slower there) and stay bit-identical.
+   test-backend-ops perf, us: q5_K 8704x5120 n=8 175 -> 157, n=10 215 -> 190, n=16 349 -> 315;
+   5120x8704 n=10 260 -> 224, n=16 450 -> 389. Fused gate/up n=10 459 -> 384 (harness).
+   The same fold in the q6_K kernel was ~1.5% slower (n=10 192.6 -> 195.6): reverted, q6_K untouched.
+Server, two agents: 37-38 t/s each (solo 61-63, three agents 23-25), model-card sampling.
+KLD on Q5_K_M (8 chunks, -ub 10 vs a -ub 512 base): new 0.001199 (max 0.150, top-1 98.88%), before the
+fold 0.001262 (max 0.526, top-1 98.72%). Gate: tg256 34.12 ± 0.20 (cool cards, 37/39 C; the gate's own
+run read 29.81 ± 2.96 at 71/73 C after the KLD passes), PPL 2.6101, full suite 16658/16658.
+
+## 285 — branch `tyler-port`, summary entry (2026-10-04 to 10-06)
 
 Work on a board without P2P (ASUS H270, GPU1 on a chipset x4 link) for a chat assistant's short
 turns, on top of `ae35056eb`. Its per-attempt log (hypothesis, numbers, kept/reverted, ~45
@@ -9087,3 +9304,4 @@ attempts) lives with the build box's bench records (`/work/bench/LOG.md`, `RESUL
 diffs in `patches/`), by that project's rule, not here. Kept results: CHANGES §15. What worked,
 what failed and the new measurement traps: FINDINGS "tyler-port". Gates on every commit: PPL
 2.6074, full op suite for kernel commits.
+
