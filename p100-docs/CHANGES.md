@@ -301,6 +301,60 @@ power cap, not at an instruction limit: at the cap the clock settles at ~1290 MH
 ~13 TFLOPS. Removing yields or bank conflicts doesn't help, because the cost is energy per flop.
 At that cap, an estimated ~176 t/s is the ceiling at 260k with exact math.
 
+## 15. Every other quant type, and parallel requests (2026-10-02 to 10-04)
+
+Until here only Q6_K had Pascal-specific matvec code; every other weight type ran the stock paths.
+This round gives every type the same treatment, for one token (plain decode) and for 2-16 tokens
+(MTP verify, parallel requests, small batches).
+
+| commit | change | effect |
+|---|---|---|
+| `8a3c3f8cc` | Pascal single-token dot products for every other type (`vecdotq-p100.cuh`) | 8704x5120, µs: q4_0 72.6 → 55.5, q4_K 101 → 64, q5_K 112 → 77, q2_K 115 → 62, q8_0 113 → 98. Integer sums exact |
+| `7c1c7f76b` | the staging loop computes each row's addresses once | bit-identical; q6_K 82.5 → 79.9 µs, q5_K 77 → 74 |
+| `77a8866b9`, `ed4c783cb` | fp16 multi-token matvec for every type: exact integer weights, prescaled fp16 activations, short HFMA2 chains folded into fp32 (the q6_K method of §11), hand-scheduled per type | q5_K at 5 tokens 175 → 129 µs, q4_K 185 → 119, q2_K 145 → 107 |
+| `f93365954` | the fp16 path up to 16 tokens (two or three requests verifying together), instead of MMQ, which has no DP4A here | Q6_K whole-model pass at 10 tokens 398 → 92 ms, 15 tokens 457 → 149 |
+| `a306fb0b0` | a sweep over every type × 1-16 tokens × three shapes; routing per type from the data | no case more than 3% slower than before |
+| `f89e97f2e`, `76575198b` | q5_K: geometry per shape (no register spills past 8 tokens), and a fold per half-window at 7+ tokens | q5_K at 10 tokens 344 → 190 µs |
+| `37869efc9` | at 9-16 tokens, matrices under 1024 rows stay on the fp32 GEMM | see accuracy below |
+| `b6f340752` | **fix:** the fused norm+gate could overwrite its own input at some ubatch sizes | 256-384 token ubatches read PPL ~10^4. A shipped bug |
+| `a8e890c9c` | **fix:** the GDN state gather raced when one ubatch held several sequences | parallel prefill read wrong states (KLD 0.044) |
+
+Geometric mean of matvec time over 1-16 tokens and three shapes, new/old: mxfp4 0.58, iq1 0.71,
+iq3 0.72-0.74, iq2 0.78-0.84, q2_K 0.80, q4_K 0.81, q5_K 0.82, q8_0 0.84, q4_1 0.86, q3_K 0.89,
+q4_0 0.92, q5_1 0.92, iq4 0.98, q5_0 0.99, q6_K 1.00.
+
+Whole model, Qwen3.8-27B Q5_K_M, against the previous release on the same cards:
+
+| | previous release | this round |
+|---|---|---|
+| `tg256` (no MTP) | 26.7-27.0 t/s | **34.2-34.7 t/s** (+28%) |
+| server with MTP, one request | 34-40 t/s | **56-64 t/s** |
+| server with MTP, two requests at once (`-np 2`), each | 7.0-7.9 t/s | **30-38 t/s** |
+
+The server rows use the QUICKSTART flags with `-np 2 -c 262144`, the model card's sampling (temperature
+1.0, top-k 20, top-p 0.95) and short coding prompts, alternating builds (new, old, old, new). Draft
+acceptance was the same on both builds (0.55-0.7), so the gain is the matvec. `tg256` is ABBA with `-r 3`. The old build's two-request
+figure is MMQ without DP4A at 10 columns. Q6_K's own `tg256` reads 33.2 on cold cards (32.6 before).
+
+**Accuracy.** Against an exact (double) product of the same quantized weights, every type × the
+shapes 8704x5120, 5120x8704 and 512x5120 × 1-16 tokens is bit-identical to the previous release
+or more accurate: 960 cases, none worse (`p100-handoff/tools/mmvq-harness/acc-vs-release.cpp`).
+The single-token path stays an integer dot product; the gain is in the 2-16 token cases, where
+q8_1-quantized activations (NMSE ~2e-5 to 2e-4) give way to exact fp16 products (~5e-7). Q6_K is
+unchanged at 1-5 tokens (KLD 0 against the previous release at `-ub 1` and `-ub 5`).
+
+Whole model, KLD against an all-fp32 run (`GGML_CUDA_CUBLAS_COMPUTE_TYPE=f32 GGML_CUDA_FA_GEMM_PREC=32`,
+`-ub 2048`), 8 chunks x 4096 of the gate corpus, previous release / this round:
+
+| | `-ub 1` (decode) | `-ub 5` (MTP verify) | `-ub 10` (two requests verifying) |
+|---|---|---|---|
+| Q6_K | identical | identical | 0.001206 / **0.001107** (top-1 98.82 / **99.05%**) |
+| Q5_K_M | 0.002553 / 0.002591 (98.61 / 98.46%) | 0.002340 / **0.001229** (98.43 / **98.95%**) | 0.001198 / **0.001159** (98.84 / **99.01%**) |
+
+Q5_K_M at one token is the same within noise (± ~0.0001): its q5_K matvec error is equal to five
+digits (NMSE 2.8440e-5 both); the integer sums are exact and only the order of the final float adds
+changed. Maximum KLD is a single token and moves with rounding alone (Q5_K_M `-ub 1`: 1.73 → 0.42).
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,
@@ -321,5 +375,6 @@ At that cap, an estimated ~176 t/s is the ceiling at 260k with exact math.
 
 ## Scope
 
-One model (Qwen3.8-27B: head size 256, GQA ratio 6), one quant family, two PCIe P100s.
+One model (Qwen3.8-27B: head size 256, GQA ratio 6), two PCIe P100s. The matvec work covers every
+weight type at the op level; whole-model checks are on Q6_K and Q5_K_M.
 Shape-specific changes are gated so other configurations take the stock path.

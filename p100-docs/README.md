@@ -2,7 +2,8 @@
 
 A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) with CUDA work for Pascal (sm_60),
 which upstream mostly leaves on generic paths. It is tuned for two
-Tesla P100-PCIE-16GB cards, tensor-split, running Qwen3.8-27B Q6_K with a q4_0 KV cache.
+Tesla P100-PCIE-16GB cards, tensor-split, running Qwen3.8-27B Q6_K with a q4_0 KV cache. Other quant
+types (Q5_K_M, Q4_K_M, IQ*, ...) get Pascal paths too.
 
 It tracks upstream by merging. The last merge was upstream `f46bc30cb`
 (2026-09-22), so current model architectures are supported.
@@ -11,7 +12,7 @@ It tracks upstream by merging. The last merge was upstream `f46bc30cb`
 
 | | upstream at the fork point | this fork |
 |---|---|---|
-| decode, `tg256` (no MTP) | 17.51 t/s | **32.6 t/s** |
+| decode, `tg256` (no MTP) | 17.51 t/s | **33.2 t/s** |
 | decode with MTP, 2k context | — | **54 t/s** |
 | decode with MTP, 260k context | — | **29-35 t/s** |
 | prefill, `pp2048` at 0 context | ~250 t/s | **493 t/s** |
@@ -52,6 +53,10 @@ Perplexity 2.6101, all-fp32 2.6095; at this size perplexity can't separate them,
 - **fp16 math with fp32 accumulation.** Prefill matmuls (`gemm-fold.cu`), the 2-5 token verify
   matvec (`mmvq-f16.cu`) and decode/verify attention (`fattn-q4p.cuh`) multiply on the fp16 pipe
   and fold their sums into fp32, with quantized values entering as exact integers.
+- **Every other quant type.** Pascal single-token dot products and fp16 multi-token matvecs for all
+  weight types, not just Q6_K. Q5_K_M with MTP: 56-64 t/s for one request (was 34-40), 30-38 t/s
+  each for two at once (was 7-8). Bit-identical or more accurate than before in every tested case.
+  [CHANGES.md §15](CHANGES.md).
 - **MTP speculative decoding** with sampled drafts and the lossless speculative-sampling rule, a
   fixed-width verify, a draft length that follows the context depth, and a K/V-only catch-up.
 
