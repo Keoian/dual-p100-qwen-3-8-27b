@@ -197,7 +197,7 @@ Notes:
 
 > Reproduced the NaN commented on in `ggml/src/ggml-cuda/fattn-gemm.cu` on line 115
 > (https://github.com/Kmic-68/llama.cpp/blob/e48e240a8c9549f88c60b4cd47c8cd44bbf22f36/ggml/src/ggml-cuda/fattn-gemm.cu#L115,
-> "a 4096-context perplexity run once went NaN ... and did not reproduce"). This fixes that issue.
+> "a 4096-context perplexity run once went NaN ... and did not reproduce"). This addresses that issue.
 >
 > Why: `fattn_gemm_softmax` reads the block's row max back from `__shared__ red[0]` and then reuses `red[]` for the
 > row-sum reduction with no barrier in between. Warp 0 can store its partial sum into `red[0]` before a slower warp
@@ -211,7 +211,8 @@ Notes:
 > unaffected.
 >
 > Tested on 2x P100 (`-sm tensor`, Qwen3.8-27B Q6_K, f16 KV, prompts of 5.8k-7.9k tokens, 13 prompts x 3 passes):
-> 10/39 NaN and 8/13 prompts nondeterministic before, 0/39 and 0/13 after. No cost to the default q4_0 path
+> 10/39 NaN and 8/13 prompts nondeterministic before, 0/39 and 0/13 after. Perplexity runs rarely lose the race
+> (3 repeated `-c 8192` f16-KV runs were bit-identical without the fix), which is likely why it didn't reproduce. No cost to the default q4_0 path
 > (pp2048@8k 408.96/406.82 vs 407.63/406.64, tg256@8k 26.36/26.37 vs 26.33/26.35); `tools/gate.sh --full` PPL 2.6074
 > unchanged.
 
