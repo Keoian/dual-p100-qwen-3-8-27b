@@ -91,7 +91,7 @@ device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, 
 | check | expected on the reference board (150 W) |
 |---|---|
 | `verify.sh` | health ok; decide ~0.9 s; chat ~2-3 s; idle VRAM ~14.3 / 15.4 GB |
-| `MODEL=/work/models/Qwen3.8-27B-UD-Q6_K.gguf ./tools/gate.sh` (with `ln -sfn build-exp build-opt`; server stopped) | PPL 2.6074 (band 2.6209 +/- 0.0199), tg256 ~26.8, FLASH_ATTN_EXT 3/3 |
+| `MODEL=/work/models/Qwen3.8-27B-UD-Q6_K.gguf ./tools/gate.sh` (with `ln -sfn build-exp build-opt`; server stopped) | PPL 2.6074 (band 2.6209 +/- 0.0199), tg256 ~30.2, FLASH_ATTN_EXT 3/3 |
 | an image question | ~5-6 s for any size up to 10 MP (resized to ~1,020 tokens) |
 | full depth (optional, ~25 min) | chat filled to ~255k with decisions + an image at 256k: no errors, GPU1 peak ~16.15 GB |
 

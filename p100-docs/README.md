@@ -23,7 +23,7 @@ It tracks upstream by merging. The last merge was upstream `f46bc30cb`
 
 **Branch `tyler-port`** adds work for boards whose cards can't reach each other (no P2P, e.g. one slot behind the
 chipset), for short chat turns on a long cached prefix (~0.56 s per 10-40-token turn at 26k context, from ~1.6-2.0 s),
-and for exact slot save/restore with MTP on (numbers at 180 W; that board now runs its cards at 150 W, tg256 26.8).
+and for exact slot save/restore with MTP on (numbers at 180 W; that board now runs its cards at 150 W, tg256 30.2 after the Kmic merge, CHANGES §17).
 Phase 3 adds [JEV-27B](https://huggingface.co/autotrust/JEV-27B) System 1 decisions on the same loaded model
 (`POST /v1/decide`, a separate context with its LoRA), and fixes a meta-backend use-after-free and the softmax race
 above. [CHANGES.md §15-16](CHANGES.md) has the commits and numbers, [FINDINGS.md](FINDINGS.md) what worked and what

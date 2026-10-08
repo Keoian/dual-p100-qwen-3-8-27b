@@ -26,7 +26,7 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   cache (the server's built-in default stays q4_0).
 - **Power:** one host hard reset (no log) during a 262k deep prefill with both cards at 180 W; not reproducible at
   <= 64k; the same 262k run passed at `nvidia-smi -i 0,1 -pl 150`. The limit resets on reboot: set it at startup.
-  tg256 at 150 W: 26.8.
+  tg256 at 150 W: 26.8 before the 10-08 Kmic merge, 30.2 after (CHANGES §17).
 - Records outside the repo (build box): `/work/bench/HANDOFF.md` (start there), `LOG.md`, `SUMMARY.md`,
   `PHASE3_JEV_SYSTEM1.md`; JEV data/tools in `/work/jev/`.
 - **Production (10-07):** JEV (q8_0 decision cache) + vision on GPU1 at 262k, after a full-depth deep test passed

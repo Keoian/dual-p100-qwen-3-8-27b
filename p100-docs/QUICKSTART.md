@@ -98,7 +98,7 @@ projector on the second card instead and frees ~850 MiB on GPU0.
 **No P2P.** If `nvidia-smi topo -m` shows the cards behind different root ports (e.g. one slot wired to the chipset at
 x4), `cudaDeviceCanAccessPeer` is likely 0 and `GGML_CUDA_P2P=1` does nothing; leave it out. Keep `-sm tensor` (still
 faster than `-sm layer`); this branch stages the exchanges through pinned host memory. Measured on such a board
-(cards at 180 W; at the 150 W limit that board now needs, tg256 is 26.8): tg256 27.8, pp2048 466, MTP decode in chat 38-40 t/s, a 10-40-token chat turn on a 26k cached prefix in ~0.56 s of
+(cards at 180 W; at the 150 W limit that board now needs, tg256 is 26.8, and 30.2 with MTP chat decode ~40 t/s after the §17 merge): tg256 27.8, pp2048 466, MTP decode in chat 38-40 t/s, a 10-40-token chat turn on a 26k cached prefix in ~0.56 s of
 server prompt time, 256k context with vision without running out of memory. Add `-ctxcp 4`: the server recycles 4
 checkpoint buffers, and each checkpoint copy is ~150 MiB.
 

@@ -313,7 +313,7 @@ carry the numbers. Bench notes outside the repo: `/work/bench/{HANDOFF,SUMMARY,L
 | commit | change | measured |
 |---|---|---|
 | `392c97791` | host-staged tensor-parallel AllReduce for small exchanges when there is no P2P (upstream allreduce.cu, pre-Volta spin) | tg256 26.66 -> 27.39 |
-| `edb91989a` | fp16 q5_K mat-vec for the 2-5 token MTP verify (q6_K kernel numerics) | MTP decode 30.9 -> 32.0, verify KLD -12% |
+| `edb91989a` | fp16 q5_K mat-vec for the 2-5 token MTP verify (q6_K kernel numerics) | MTP decode 30.9 -> 32.0, verify KLD -12% (superseded by Kmic's q5_K, §17) |
 | `0ff1cd3b1` | 9..40-token batches of q6_K/q5_K as fp16 mat-vec column chunks (idea of Bonsai donor `866ef4d`) | pp16 36.5 -> 74.9 |
 | `756beccb3` | server keeps the just-restored context checkpoint instead of copying it again | Ember TTFT -10% |
 | `cf2090206` | server: no extra prompt split + checkpoint at the last user message (`LLAMA_CKPT_USER_SPLIT=1` = old) | Ember TTFT 1253 -> 781 ms |
@@ -342,13 +342,13 @@ RAM-loaded continuations are byte-identical to the live slot, also across restar
 in one pass and the same prompt continued from a cached prefix can differ in wording, MTP or not (batch-split numerics).
 
 **Switches added** (defaults are the kept behaviour): `GGML_CUDA_AR_HOST` (0 = off), `GGML_CUDA_AR_HOST_MAX` (bytes,
-1 MiB), `GGML_CUDA_MMVQ_F16_Q5K`, `GGML_CUDA_MMVQ_CHUNK_MAX` (28), `GGML_CUDA_MMVQ_CHUNK_ALL` (int8 chunking of all types,
+1 MiB), `GGML_CUDA_MMVQ_F16_Q5K` (removed by the §17 merge), `GGML_CUDA_MMVQ_CHUNK_MAX` (28), `GGML_CUDA_MMVQ_CHUNK_ALL` (int8 chunking of all types,
 less accurate), `GGML_CUDA_GEMM_FOLD_NARROW` (64; 0 = always 128-column tiles), `GGML_CUDA_FUSE_CONV_DECODE`,
 `GGML_CUDA_XCHG_NOP2P`, `LLAMA_CKPT_SKIP_CURRENT`, `LLAMA_CKPT_USER_SPLIT`, `LLAMA_CKPT_MADVISE`, `LLAMA_CKPT_POOL` (4).
 
 **Tried and not kept** (details in FINDINGS "tyler-port"): Bonsai donor cuBLAS ALGO2/ALGO5 GEMMs and f16 split-KV
 flash-decoding (superseded or slower here); int8 chunking of every type (KLD +87%); fp16 q8_0 mat-vec (+12% pp9 in
-llama-bench, slower in the server); chunk width 8; pinned staging for checkpoint copies (neutral once the madvise
+llama-bench, slower in the server; Kmic's tuned one now takes q8_0 at 3..5 and 9..16 columns, §17, and is faster); chunk width 8; pinned staging for checkpoint copies (neutral once the madvise
 stall was fixed); AllReduce slot ring 8, exchange chunks 2/8; MTP n-max 3/5/6 (4 best); the n-4 checkpoint read from
 the MTP rollback snapshot (-4% prompt time, but breaks byte-identical replays, see FINDINGS).
 
@@ -418,6 +418,14 @@ both cards sat at their 180 W cap together (371 W peak). Cost of the cap: tg256 
 ## 17. Every other quant type, and parallel requests (2026-10-02 to 10-04)
 
 *(Kmic-68's `p100-optimizations` section 15, merged into tyler-port as §17 because §15-16 were taken.)*
+
+**On the no-P2P board after the merge** (`99f7e8425`, 150 W, `-sm tensor`, q4_0 KV; tyler-port before -> after):
+tg256 26.81 -> 30.22, pp5 77.7 -> 89.4, pp9 72.2 -> 98.4, pp16 79.6 -> 109.7, pp24 91.5 -> 98.7, pp32-64 equal; MTP
+generation in a short chat turn on a 25k cached prefix 33.9 -> 40.3 t/s, TTFT 807 -> 788 ms. Gate PPL 2.6074 (same).
+KLD (mean / top-1): ub1 0.001607 / 98.86% -> 0.001893 / 98.80% (median, p90, p99 within 2%: a few tail tokens move the
+mean), ub5 0.001473 -> 0.000777, ub8 0.001723 -> 0.001388, ub16 0.000693 -> 0.000771 (top-1 99.24% both). JEV
+decisions identical; VRAM unchanged (idle 14,307 / 15,443 MiB, peak at 256k 15,217 / 16,153). In tyler-port the 9..16
+column route runs before the chunked q6_K/q5_K path, which now covers 17..28 columns.
 
 Until here only Q6_K had Pascal-specific matvec code; every other weight type ran the stock paths.
 This round gives every type the same treatment, for one token (plain decode) and for 2-16 tokens
