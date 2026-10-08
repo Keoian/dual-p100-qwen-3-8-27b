@@ -195,30 +195,25 @@ Notes:
 
 **Body:**
 
-> `fattn_gemm_softmax` reads the block's row max back from `__shared__ red[0]` and then reuses `red[]` for the
+> Reproduced the NaN commented on in `ggml/src/ggml-cuda/fattn-gemm.cu` on line 115
+> (https://github.com/Kmic-68/llama.cpp/blob/e48e240a8c9549f88c60b4cd47c8cd44bbf22f36/ggml/src/ggml-cuda/fattn-gemm.cu#L115,
+> "a 4096-context perplexity run once went NaN ... and did not reproduce"). This fixes that issue.
+>
+> Why: `fattn_gemm_softmax` reads the block's row max back from `__shared__ red[0]` and then reuses `red[]` for the
 > row-sum reduction with no barrier in between. Warp 0 can store its partial sum into `red[0]` before a slower warp
-> has read the max. That warp then uses the sum as the max, and `exp(v - m)` is wrong for its keys. With fp32
-> (`GGML_CUDA_FA_GEMM_PREC=32`) this shows up as run-to-run drift. With the default fp16 path a probability can
-> overflow half to inf and the attention output becomes NaN. One `__syncthreads()` after `vmax = red[0]` fixes it.
+> has read the max. That warp then uses the sum as the max, and `exp(v - m)` is wrong for its keys. In the fp16 path a
+> probability can overflow half to inf and the attention output becomes NaN; in fp32 (`GGML_CUDA_FA_GEMM_PREC=32`) it
+> shows up as run-to-run drift. The out-of-place change in `cb6024e6b` removed a different race and doesn't touch this
+> one. One `__syncthreads()` after `vmax = red[0]` fixes it.
 >
 > Affected: the generic branch of `ggml_cuda_flash_attn_ext_gemm` (pre-Volta, nkv >= 4096, >= 128 query rows,
 > KV type other than q4_0, e.g. f16 / q8_0). q4_0 KV goes to the fold kernels and is unaffected. Decode is
 > unaffected.
 >
-> Repro (2x P100, -sm tensor, Qwen3.8-27B Q6_K, 13 prompts of 5.8k-7.9k tokens x3 passes, b/ub 512):
->
-> | | NaN before | NaN after | prompts with run-to-run differences before | after |
-> |---|---|---|---|---|
-> | f16 KV | 10/39 | 0/39 | 8/13 | 0/13 |
-> | q8_0 KV | 8/39 | 0/39 | - | 0/13 |
->
-> Before the fix: `GGML_CUDA_FA_GEMM=0` (tile) gives 0/39 NaN and deterministic output. `GGML_CUDA_FA_GEMM_PREC=32`
-> gives 0/39 NaN but 11/13 prompts nondeterministic. So it's a race in this kernel, not overflow on particular data.
-> Likely the same issue `cb6024e6b` was chasing.
->
-> No cost to the default q4_0 path (A/B of fixed vs pre-fix library, pp2048@8k 408.96/406.82 vs 407.63/406.64,
-> tg256@8k 26.36/26.37 vs 26.33/26.35). `tools/gate.sh --full`: PPL 2.6074 unchanged. One unrelated
-> MUL_MAT q5_1 tolerance flake that passes 5/5 on both libraries.
+> Tested on 2x P100 (`-sm tensor`, Qwen3.8-27B Q6_K, f16 KV, prompts of 5.8k-7.9k tokens, 13 prompts x 3 passes):
+> 10/39 NaN and 8/13 prompts nondeterministic before, 0/39 and 0/13 after. No cost to the default q4_0 path
+> (pp2048@8k 408.96/406.82 vs 407.63/406.64, tg256@8k 26.36/26.37 vs 26.33/26.35); `tools/gate.sh --full` PPL 2.6074
+> unchanged.
 
 ## 8. Reference
 
