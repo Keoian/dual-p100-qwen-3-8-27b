@@ -143,23 +143,27 @@ So the GEMM attention path is deterministic again.
   `MUL_MAT(type_a=q5_1, type_b=f32, m=16, n=1, k=32)` ERR 0.000539 > 0.0005. That is a random-input tolerance flake in
   an unrelated op: it passed 5/5 reruns on the fixed library and 5/5 on the pre-fix library.
 
-## 5. How a reviewer can reproduce it without our tools (suggested, not yet run in this exact form)
+## 5. Reproducing it
 
-Any pre-Volta setup that runs long prompts with an f16 or q8_0 KV cache should show it. For example, run the same
-long-context perplexity twice and compare per-chunk values (expect run-to-run differences and occasional `nan`
-before the fix, identical results after):
+**The perplexity recipe suggested here earlier does not reproduce it** (run 2026-10-08 on Kmic's e48e240a8 without the
+fix, Qwen3.8-27B Q6_K, 2x P100 `-sm tensor`, f16 KV, `-b 512 -ub 512`):
 
-```bash
-for i in 1 2; do
-  ./build/bin/llama-perplexity -m <model.gguf> -f <long text> -c 8192 -b 512 -ub 512 \
-      -ngl 99 -fa 1 -ctk f16 -ctv f16 [-sm tensor] 2>&1 | grep -E '^\[|estimate' > ppl-run$i.txt
-done
-diff ppl-run1.txt ppl-run2.txt   # before: differs (and may show nan); after: identical
-```
+| form | runs | result without the fix |
+|---|---|---|
+| `llama-perplexity -c 8192`, per-chunk values compared | 3 | identical, no `nan` |
+| same, logits saved with `--kl-divergence-base`, then `--kl-divergence` | 1 + 3 | KLD 0 (rounding), top-1 100% |
+| `-c 6000` (each chunk ends on a 368-row batch past 4096 KV) | 1 + 3 | KLD 0, top-1 100% |
 
-Our numbers come from a standalone decision tool (one sequence, memory cleared per prompt, 13 prompts x3).
-The perplexity form above is equivalent in which kernels it exercises (prefill, `nkv >= 4096`, `>= 128` rows), but
-we have not run it.
+So perplexity-style prefill rarely loses this race; Kmic's own comment above `fattn_gemm_softmax` records one
+4096-context perplexity run that went NaN once and did not reproduce, which fits.
+
+**Where it does reproduce:** `llama-jev-decide` on branch `tyler-port` (tools/jev-decide), which runs one long prompt
+(5,829-7,901 tokens) per row with the memory cleared between rows, `-c 8192 -b 512 -ub 512 -ctk f16 -ctv f16`, 13 rows x 3
+passes, no LoRA: 10/39 rows NaN and 8/13 rows with different logits between passes. `GGML_CUDA_FA_GEMM=0` (tile
+kernel): 0/39 NaN, 0/13 differ. With the barrier: 0/39 NaN, 0/13 differ. q8_0 KV + the JEV LoRA: 8/39 NaN before, 0 after (§4).
+
+The case for the fix stands on the code (§2): the barrier is missing between the last read of `red[0]` and the next
+write to `red[]`, which `__syncthreads` semantics require regardless of how often the timing loses.
 
 ## 6. Steps for the new Claude Code instance
 
