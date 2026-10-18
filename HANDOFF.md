@@ -4,6 +4,28 @@ Where the work stands, and what's worth doing next. For the gates, see `tools/ga
 tyler-port section below (the operator's mission brief lives outside the repo, `/work/CLAUDE.md` on the build box).
 For the results and changes, see `p100-docs/`; to bring the production setup up elsewhere, `p100-docs/deploy/`.
 
+## Branch `kv-q8q4-262k-vision1440-q8proj` (state 2026-10-18; production on the reference box)
+
+- Seven commits on tyler-port `67a7a1472` (CHANGES §18, FINDINGS "q8_0 K cache, 1440p images", QUICKSTART "1440p
+  images"). Production on :8090 is `p100-docs/deploy/start-qwen-vision.sh` from `build-vision`: 262k, KV q8_0 K /
+  q4_0 V, `-ub 1024`, Q8_0 projector on GPU1, images up to 1440p area, JEV off.
+- Why: the operator wanted small text in screenshots legible (the 1024-token cap made 9-12 px text unreadable), the
+  most accurate cache that fits at full context, and the fastest accurate projector; JEV was dropped to make room.
+- Rollback on the box: `bash /work/start-qwen.sh.pre-vision` (tyler-port build-exp, JEV + q4_0/q4_0). The default
+  `start-qwen.sh` gained `CTK`/`CTV`/`UB` switches with the old defaults.
+- Margins: GPU1 peaks at 16,101 of 16,384 MiB (1440p image at 259k). `-ub 2048` and image caps above 4096 do not
+  fit at 262k. Required env: `GGML_CUDA_FA_VEC_MAX_Q=16`, `GGML_CUDA_FA_GEMM_MINQ=17` (set by the script).
+- Open: image prompt time is now mostly the language model's prefill of 3,600 image tokens (~9.5 s); the vision PV
+  GEMM wastes ~44% of its tiles at head size 72; q8_0 K decode at depth costs per byte read; better V types
+  (q5_x, 4.6x lower KLD) need V support in q4p/fold and ~0.4 GiB per card more.
+- Process lessons from this round:
+  - Test servers on the shared :8090 got a temporary API key, because outside clients (an agent harness) poll the
+    endpoint and skew or interrupt measurements; the real key file was left untouched and restored at the end.
+  - Wait loops built on `pgrep -f <script>` match their own command line and never end: wait on PIDs or names.
+  - Splitting a mixed working tree into commits with `git apply --cached --unidiff-zero` misplaced a pure-insertion
+    hunk by 20 lines; stage hunks exactly by line number (or with context) and re-read each commit's diff.
+  - Probe VRAM at full depth unless you have shown nothing grows with depth; compare cache types by KLD, not greedy.
+
 ## Branch `tyler-port` (state 2026-10-07; supersedes the sections below for this branch)
 
 - `tyler-port` = `p100-optimizations` at `ae35056eb` + gated commits, pushed to Keoian/dual-p100-qwen-3-8-27b.

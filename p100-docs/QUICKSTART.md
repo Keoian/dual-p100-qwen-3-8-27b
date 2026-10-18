@@ -80,8 +80,9 @@ creative writing. Cards that have been under sustained load read ~5-10% lower.
 
 ## VRAM
 
-Figures are **per card**, at a full 262k context, with nothing else on the GPU. GPU0 is the
-tighter card because the vision projector loads onto it.
+Figures are **per card**, at a full 262k context, with nothing else on the GPU. Without `-mmdev`, GPU0 is the
+tighter card because the vision projector loads onto it; the tyler-port scripts use `-mmdev CUDA1`, which makes
+GPU1 the tight one (the vision branch's setup leaves GPU1 ~280 MiB at full depth with a 1440p image, below).
 
 | configuration | GPU0 free at full context |
 |---|---|
@@ -162,6 +163,28 @@ decisions).
   `--jev-limit`; see `tools/jev-decide/README.md`. Pass the served decision-cache type (`-ctk q8_0 -ctv q8_0` for the
   production setup) to measure what the server runs.
 
+## 1440p images and a q8_0 K cache (branch `kv-q8q4-262k-vision1440-q8proj`)
+
+```bash
+bash p100-docs/deploy/build.sh build-vision           # this branch; adds q4p / fold kernels for a q8_0 K cache
+bash p100-docs/deploy/fetch.sh                        # also fetches the Q8_0 projector into /work/models-vision
+cp p100-docs/deploy/start-qwen*.sh /work/              # start-qwen-vision.sh needs start-qwen.sh next to it
+bash /work/start-qwen-vision.sh
+```
+
+What it changes against `start-qwen.sh`: JEV off (`/v1/decide` not served), KV cache K q8_0 / V q4_0 (KLD against
+an f16 cache 0.00274 -> 0.00116), `-ub 1024`, the ggml-org Q8_0 projector, images up to 2560x1440's pixel area
+(`IMAGE_MAX_TOKENS=3600`), and two required routing switches, `GGML_CUDA_FA_VEC_MAX_Q=16` and
+`GGML_CUDA_FA_GEMM_MINQ=17`. Without them a q8_0 cache runs out of memory at depth (CHANGES §18).
+
+- **Image cap.** 1024 tokens (~1 MP, the default script) answers in ~4 s but loses text below ~14 px; 3600 keeps
+  9-12 px text (19-23 of 24 rows exact) at ~15-17 s to first byte at shallow depth, ~32 s near 255k. 4096 fits at
+  262k; 6000 does not.
+- **Speed vs q4_0/q4_0:** decode -4% at 64k (bytes, not code); prefill equal at the same `-ub`, 4-7% below the
+  default script's `-ub 2048`, which doesn't fit beside a 1440p image at 262k (it does at ~240k).
+- **VRAM:** idle 14,583 / 15,435 MiB; peaks 15,187 / 16,101 with a 1440p image at 258,866 tokens. If a card has
+  less free memory than the reference board's, lower `CTX` (each 10k tokens frees ~130 MiB per card).
+
 ## Precision switches
 
 Everything defaults to the fast path, which is at least as accurate as stock. These exist for
@@ -180,6 +203,9 @@ A/B testing.
 | `GGML_CUDA_AR_P2P=0` | the tensor-parallel exchange back to copy-then-add (the one-kernel P2P version is bit-identical and faster) |
 | `GGML_CUDA_FUSE_FFN_GLU=0` | the FFN gate, up and SwiGLU as three kernels again (bit-identical) |
 | `LLAMA_SPEC_BLOCK_VERIFY=0` | per-token draft verification instead of block verification (same output distribution; block accepts more) |
+| `GGML_CUDA_FA_Q4P_Q8K=0` | a q8_0 K cache back to the generic decode/verify kernels (vec, tile) instead of q4p's q8_0-K variant |
+| `GGML_CUDA_FA_FOLD_Q8K=0` | a q8_0 K cache back to the generic GEMM prefill attention instead of the fold kernels |
+| `GGML_CUDA_FA_VEC_MAX_Q=N`, `GGML_CUDA_FA_GEMM_MINQ=N` | routing for caches without a direct tile path (default 2 / 128; the q8_0 setup needs 16 / 17, else the tile kernel's whole-cache f16 copy runs out of memory at depth) |
 | `LLAMA_MTP_DRAFT_VOCAB=0` | the MTP draft scores the full vocabulary instead of a small copy of the common tokens. Saves ~112 MiB per card, drafts get slower, output is unchanged |
 
 ## Benchmarking

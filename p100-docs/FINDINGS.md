@@ -239,6 +239,35 @@ CHANGES §16 lists the commits.
   per-request step log while testing; inside a container `dmesg` is not readable but AER counters are.
 - `pkill -f <pattern>` from a tool shell matches that shell's own command line and kills it; use `pkill -x`.
 
+## q8_0 K cache, 1440p images and the Q8_0 projector at 262k (2026-10-17/18, CHANGES §18)
+
+- **On Pascal only q4_0/q4_0 had fast paths.** q4p (decode/verify), fold (prefill) and the tile kernel's direct
+  read were all q4_0-only, so any other cache type ran upstream's generic kernels with no warning: q8_0/q4_0 lost 8%
+  decode shallow, 21% at 64k and 5% prefill. Benchmark any new cache type at depth before believing a KLD win.
+- **The tile kernel converts the whole cache to f16** for a quantized cache it can't read directly, into pool
+  scratch that grows with the context (~0.5 GiB per card at 255k). Batches of 3-127 tokens reach it (MTP's 5-token
+  verify, the short text after an image), so a server can pass at shallow depth and run out of memory at 112k.
+  Probe memory limits with a full-depth fill. Once nothing grows with depth, a shallow peak equals the deep one
+  (measured: 16,043 MiB both), which makes cap probes cheap.
+- **The cache was already rotated.** Upstream's Hadamard rotation (QuaRot-style, Q and K after RoPE, V and the
+  output) is on for every quantized cache with head size divisible by 64; turning it off costs 30% KLD. q8_0 K
+  still halves q4_0's error on top of it, and with K at q8_0 the V side is the remaining error.
+- **q8_0 K's cost is per load, not per FLOP.** The q8_0-K q4p takes +43% attention time for +44% bytes at ~230 GB/s;
+  fp16 QK changed nothing. Only fewer bytes (or a different V) will move it.
+- **Vision: BF16 is the reference, not F16.** The projector's weights are BF16; F16 differs by rel-L2 0.019 at 1440p
+  and 0.044 on a small photo, about as much as Q8_0 does. Judge projector quantizations against BF16 and by answers;
+  answer-level differences between all of them were rewordings and one-character slips on 9-10 px text.
+- **Vision encode is attention-bound and grows faster than linearly** (0.87 s at 1,008 tokens, 2.6 s at 1,980,
+  7.4 s at 3,600 on the tile kernel). Raising the cap to 1440p made small text legible (9-12 px rows 0/24 -> 19/24)
+  at ~4x the time to first byte (4 s -> 15-17 s at shallow depth). After the encoder fix most of that is the
+  language model's prefill of the image tokens.
+- **How the measurements lied, again:**
+  - llama-bench reported a 1,010 MiB compute buffer at `-ub 1024` because it reserves logits for every token of a
+    batch; the server reserves 1 + n_draft. Don't size server VRAM from llama-bench's buffer lines.
+  - Greedy output isn't byte-identical across cache types by design; the comparison is KLD against an f16 cache.
+  - A vision suite of 30 tasks scored Q8_0 0.9403 once and 0.9352 later: the spread is one or two 9-10 px code rows.
+    Compare answers to the reference too, not only scores.
+
 ## What transfers to other Pascal cards
 
 - **Direct KV-cache dequantization** helps any pre-Volta GPU with a quantized KV cache, and more

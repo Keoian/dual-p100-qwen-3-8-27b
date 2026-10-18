@@ -479,6 +479,81 @@ Q5_K_M at one token is the same within noise (± ~0.0001): its q5_K matvec error
 digits (NMSE 2.8440e-5 both); the integer sums are exact and only the order of the final float adds
 changed. Maximum KLD is a single token and moves with rounding alone (Q5_K_M `-ub 1`: 1.73 → 0.42).
 
+## 18. Branch `kv-q8q4-262k-vision1440-q8proj`: a q8_0 K cache at 262k, 1440p images, Q8_0 projector (2026-10-17/18)
+
+Operator's goal (Tyler): the highest stable context with a q8_0 K / q4_0 V System-2 cache, the fastest and most
+accurate vision projector (optimize the vision pipeline if needed), images large enough that small text stays
+legible, JEV dropped (`/v1/decide` off; frees ~1.1-1.3 GiB per card). Bar: PPL inside the gate band, KLD no worse
+than q4_0/q4_0, a vision suite within noise of the F16 projector. Result: all of it at the full 262,144 context.
+Branch on top of tyler-port `67a7a1472`; served by `p100-docs/deploy/start-qwen-vision.sh` (build dir `build-vision`).
+
+| commit | change | metric |
+|---|---|---|
+| `9a902d180` | deploy: JEV off, image cap 1024 -> 3600 tokens (2560x1440's pixel area) | 9-12 px text rows exact 0/24 -> 19/24 |
+| `186f82e00` | GEMM attention accepts no mask (vision encoders) | 1440p encode 7.37 -> 5.73 s |
+| `2f8b6e43c` | q4p decode/verify kernel for a q8_0 K cache | q8_0/q4_0 tg32 @ d65536 22.0 -> 26.7 (q4_0/q4_0 27.7) |
+| `19d593f8e` | fold prefill attention for a q8_0 K cache | pp2048 @ d131072 198.6 -> 219.7 (= q4_0/q4_0 at the same `-ub`) |
+| `4e2a2aa19` | `GGML_CUDA_FA_VEC_MAX_Q` / `GGML_CUDA_FA_GEMM_MINQ` | q8_0/q4_0 at 262k: OOM -> OK |
+| `cd587dc08` | `llama-vision-bench` (projector alone: encode time, memory, embeddings) | tool |
+| `2258419c0` | deploy: `start-qwen-vision.sh`, `CTK`/`CTV`/`UB` switches, Q8_0 projector pinned | KLD 0.00274 -> 0.00116 |
+
+**KV cache types** (KLD against an f16 cache, kld-text, c 4096 x 16 chunks; Hadamard rotation on, as by default):
+
+| K / V | mean KLD | p99 | same top | extra MiB per card at 262k vs q4_0/q4_0 |
+|---|---|---|---|---|
+| q4_0 / q4_0 | 0.002736 | 0.0202 | 98.67% | 0 |
+| q4_0 / q4_0, rotation off (`LLAMA_ATTN_ROT_DISABLE=1`) | 0.003564 | 0.0311 | 98.28% | 0 |
+| q4_0 / q8_0 | 0.002025 | 0.0141 | 98.89% | +1024 |
+| q5_1 / q5_1 | 0.000966 | 0.0047 | 99.33% | +768 |
+| **q8_0 / q4_0** (served) | **0.001158** | 0.0071 | 99.12% | +1024 |
+| q8_0 / q5_0 | 0.000320 | 0.0024 | 99.47% | +1280 |
+| q8_0 / q5_1 | 0.000251 | 0.0022 | 99.54% | +1408 |
+| q8_0 / q8_0 | 0.000077 | 0.0007 | 99.78% | +2048 |
+
+Gate PPL: q4_0/q4_0 2.6074, q8_0/q4_0 2.6064. With K at q8_0 the V side dominates what error is left.
+
+**Why q8_0 K needed kernel work.** Every Pascal fast path in this fork (q4p decode/verify, fold prefill, the tile
+kernel's direct read) was q4_0/q4_0-only, so any other cache silently ran upstream's generic kernels: decode -8%
+shallow, -21% at 64k, prefill -5% at 64k. Ported: q4p's QK side to q8_0 K (same mantissa trick: XOR 0x80, PRMT into
+`0x4B0000nn`, one FADD; 34-byte blocks keep q4_0's even/odd word alignment; 4 splits per position to fit registers;
+fp32 QK; PV unchanged), and fold's dequant (the only q4_0-specific step). q8_0-K attention still takes +43% time at
+262144 keys for +44% K/V bytes; see Known gaps.
+
+**The out-of-memory chain at 262k** (q8_0/q4_0, Q8_0 projector on GPU1, 1440p image):
+1. `-ub 2048`: OOM on the first image (later, with every fix, still: the weight-GEMM pool scratch of a 2048-token
+   batch next to the projector on GPU1). Fits at 240k (GPU1 peak 16,125 MiB) for only +4-5% prefill: `-ub 1024`.
+2. `-ub 1024`: VRAM grew with depth and ran out at ~112-140k: MTP's 5-token verify (q4p was q4_0-only) went to the
+   tile kernel, which first converts the whole K/V cache to f16 in pool scratch (~0.5 GiB per card at 255k).
+3. With 1-8 tokens on vec: the 42-token text batch after an image at 255k took the same tile path, and the
+   compute-buffer reallocation then failed.
+Fix: q4p for 1-5 tokens, vec for 6-16 (`GGML_CUDA_FA_VEC_MAX_Q=16`), the chunked GEMM path from 17
+(`GGML_CUDA_FA_GEMM_MINQ=17`); defaults unchanged (2 / 128). GEMM from 9 tokens was too slow for chat turns
+(10 tokens at 64k: 39 vs 67 t/s). After it: fill to 255k flat, image at 258,866 tokens OK.
+
+**Vision.** The encoder (27 layers, head 72, 16 heads, f16 K/V, no mask) needs flash attention (off: +15% time,
++4.3 GiB) and ran the tile kernel because the GEMM attention path refused a null mask; with no mask `mask_first`
+is set to nkv and the softmax never reads it. Projectors: unsloth publishes only BF16/F16 (the weights are BF16, so
+BF16 is the reference; F16 already differs, rel-L2 0.0186 at 1440p, 4.4% on a 640x488 photo); ggml-org publishes
+Q8_0 (629 MB; the 27 `ffn_down` stay F16, 4304 is not a multiple of 32). Q8_0 + GEMM: 5.76 s, -284 MiB, within
+noise on a 30-task suite (charts, 12 px tables, 13 px code, counts, OCR, small-text rows): BF16 0.9378, F16 0.9378,
+Q8_0 0.9352-0.9403 across runs (the spread is one or two 9-10 px code rows of 42).
+
+**Switches added:** `GGML_CUDA_FA_VEC_MAX_Q`, `GGML_CUDA_FA_GEMM_MINQ`, `GGML_CUDA_FA_Q4P_Q8K` (0: q8_0 K off q4p),
+`GGML_CUDA_FA_FOLD_Q8K` (0: q8_0 K off fold), compile-time `Q4P_K8_NSPLIT` / `Q4P_K8_PT`; start-qwen.sh `CTK`, `CTV`, `UB`.
+
+**Tried and not kept:**
+- Vision attention with fp32 accumulation (QK, PV or both): accurate, but 7.1-8.9 s, slower than the tile kernel.
+- GEMM attention key chunks 512 / 1024 / 3600 instead of 2048: noisier or slower.
+- Softmax reading S once into registers: bit-identical, -1.4% (under the 2% bar).
+- q4p q8_0 K with fp16 QK (bytes as exact q/16 halves `0x54nn`, q4_0's headroom): same speed.
+- q4p q8_0 K shapes: NSPLIT 2 or PT 4 exceed 64 KB shared memory at 5 tokens; NSPLIT 2 PT 1 is slower.
+- `-ub 2048` at 240k; image caps above 4096 tokens at 262k (6000 OOMs on GPU1).
+
+**Served, measured through the script** (build-vision, 150 W): test-backend-ops 16,711/16,711 on both cards; vision
+suite 0.9352; Ember 10 turns at 25k: TTFT median 474 ms, decode 36.5 t/s (q4_0/q4_0 JEV off: 460 ms, 32.2); fill to
+255k 358 -> 144 t/s (q4_0/q4_0 `-ub 2048`: 386 -> 144); 1440p image at 258,866 tokens: prompt 31.5 s, decode 27.8
+t/s, small text 96-100% per size, peaks 15,187 / 16,101 MiB (GPU1 ~280 MiB from full).
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,
@@ -493,7 +568,14 @@ changed. Maximum KLD is a single token and moves with rounding alone (Q5_K_M `-u
   verify at 262144 in 2.68 ms per call with fp16 products; the cache read alone would take ~0.35.
   It is at 255 registers and one block per SM, so what is left is latency, not arithmetic. Time
   attention changes in the server: the op test runs attention alone at 1328 MHz, where the
-  server's power cap holds 1189 (OPTLOG 190).
+  server's power cap holds 1189 (OPTLOG 190). The q8_0-K variant (§18) fits that picture: +44% K/V
+  bytes cost +43% time at 262144 keys while reading at ~230 GB/s, a third of what the card sustains,
+  so the cost is per load issued, not DRAM bandwidth.
+- **q8_0 K cache (§18).** Fast kernels cover only q4_0 V: q8_0/q5_x (4.6x lower KLD again) would need V support
+  in q4p and fold, and 0.4 GiB more per card than fits beside a 1440p image at 262k. GPU1 has ~280 MiB left at
+  full depth with an image; `-ub 2048` does not fit there. An image's prompt time is now mostly the language
+  model's prefill of its 3,600 tokens (~9.5 s), not the encoder (5.8 s); the encoder's PV GEMM wastes ~44% of
+  its 128-row tiles at head size 72.
 - **No P2P boards (tyler-port).** Each turn still runs a separate ~75 ms decode of the prompt's last 4 tokens only to
   place the end-of-prompt checkpoint; the obvious fix (read it from the MTP rollback snapshot) breaks replay identity.
   Batches of ~129-383 tokens still pay for 128-column fold tiles (cuBLAS ALGO6 is 14% faster at 300, less accurate).

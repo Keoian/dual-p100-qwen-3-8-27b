@@ -116,7 +116,8 @@ static __device__ __forceinline__ float fattn_q4p_lo_f(const uint32_t x) {
 // OLD = the configuration before the PV reduce-scatter (GGML_CUDA_Q4P_OLD=1), kept for in-model A/B
 // KQ8: K is q8_0 (34-byte blocks of 32 signed bytes) instead of q4_0; V stays q4_0. 4 splits per position keep the
 // K words in registers. QK in fp32: an fp16 variant (bytes as exact q/16 halves) measured the same, since at depth
-// this kernel is bound by its K/V reads (q8_0 K: +44% bytes, +43% time at 262144 keys).
+// this kernel's time follows the K/V bytes it loads (q8_0 K: +44% bytes, +43% time at 262144 keys, at ~230 GB/s:
+// load latency per word, not DRAM bandwidth).
 template <int R, bool OLD = false, bool KQ8 = false>
 struct fattn_q4p_cfg {
     static constexpr int NT     = 256;                    // threads per block

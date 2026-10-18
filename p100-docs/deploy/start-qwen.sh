@@ -27,7 +27,8 @@ AUTH=(); [ -n "$API_KEY_FILE" ] && [ -f "$API_KEY_FILE" ] && AUTH=(--api-key-fil
 # projector on GPU1 -> peaks GPU0 15,217 / GPU1 16,153 MiB; on GPU0 would mirror that); GPU1 is the tested placement. MMDEV= = default device
 MMDEV=${MMDEV-CUDA1}
 [ ${#VISION[@]} -gt 0 ] && [ -n "$MMDEV" ] && VISION+=(-mmdev "$MMDEV")
-# System-2 KV cache types (CTK/CTV); q4_0/q4_0 keeps Kmic's Pascal decode kernel (q4p), other types use the generic one
+# System-2 KV cache types (CTK/CTV). Pascal fast kernels exist for q4_0/q4_0 and (kv-q8q4 branch) q8_0 K / q4_0 V;
+# other types fall back to generic kernels and need GGML_CUDA_FA_VEC_MAX_Q / GGML_CUDA_FA_GEMM_MINQ (QUICKSTART). UB = -ub
 CTK=${CTK:-q4_0}
 CTV=${CTV:-q4_0}
 # JEV-27B System 1 decisions on POST /v1/decide (separate context on the same model, LoRA bound there only);

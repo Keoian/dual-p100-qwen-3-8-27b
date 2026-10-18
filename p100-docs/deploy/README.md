@@ -66,7 +66,7 @@ is no P2P with JEV loaded until a supervised test. Env switches of the script: `
 device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `ALIAS=`, `API_KEY_FILE=` (no key),
 `CTX=`, `BUILD=`, `MODEL=`, `JEV_DIR=`. Why each choice: [QUICKSTART.md](../QUICKSTART.md).
 `start-qwen-vision.sh` (copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision` from the
-`vision-1440p` branch) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->
+`kv-q8q4-262k-vision1440-q8proj` branch) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->
 0.00116), the Q8_0 vision projector and images up to 2560x1440's pixel area (`IMAGE_MAX_TOKENS=3600`); numbers in
 its header. New start-qwen.sh switches for it: `CTK=`, `CTV=` (cache types), `UB=` (micro-batch).
 
@@ -76,6 +76,7 @@ its header. New start-qwen.sh switches for it: `CTK=`, `CTV=` (cache types), `UB
 |---|---|---|
 | model `Qwen3.8-27B-UD-Q6_K.gguf`, projector `mmproj-F16.gguf` | huggingface `unsloth/Qwen3.8-27B-GGUF` | `4ca720788d1e01f1bff70c033e0d0028fd02e502` |
 | JEV `adapter/`, `head.safetensors`, `calibration.json`, `config.json` | huggingface `autotrust/JEV-27B` | `51740a8891c2a8baefd969237fd44187b3e3a115` |
+| projector `mmproj-Qwen3.8-27B-Q8_0.gguf` (start-qwen-vision.sh, into `/work/models-vision`) | huggingface `ggml-org/Qwen3.8-27B-GGUF` | `71bc7b627595dc8a91039addd9c791ae548d6747` |
 | JEV LoRA GGUF | `tools/jev-decide/convert_jev_lora.py --outtype f16` (numpy, safetensors, repo `gguf-py`) | deterministic, see `SHA256SUMS` |
 
 ## Host requirements and settings
@@ -99,4 +100,8 @@ its header. New start-qwen.sh switches for it: `CTK=`, `CTV=` (cache types), `UB
 | an image question | ~5-6 s for any size up to 10 MP (resized to ~1,020 tokens) |
 | full depth (optional, ~25 min) | chat filled to ~255k with decisions + an image at 256k: no errors, GPU1 peak ~16.15 GB |
 
-Records of how these numbers were measured: [CHANGES.md §15-16](../CHANGES.md), [FINDINGS.md](../FINDINGS.md).
+With `start-qwen-vision.sh` (build-vision): idle VRAM ~14.6 / 15.4 GB; Kmic's gate PPL 2.6064 with `-ctk q8_0`;
+a 1440p screenshot ~15 s at shallow depth; full depth (optional, ~45 min) chat filled to ~255k + a 1440p image at
+~259k: prompt ~32 s, decode ~28 t/s, GPU1 peak ~16.1 GB. No `/v1/decide` (JEV off), so skip that part of `verify.sh`.
+
+Records of how these numbers were measured: [CHANGES.md §15-16, §18](../CHANGES.md), [FINDINGS.md](../FINDINGS.md).
