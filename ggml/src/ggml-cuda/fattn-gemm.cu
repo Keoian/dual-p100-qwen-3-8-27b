@@ -382,12 +382,13 @@ static __device__ __forceinline__ float fold_h(const half2 p) {
     return __int_as_float(v & 0x8FFFE000);                 // = (lo + hi) * 2^-112
 }
 
-// Dequantize one chunk of a q4_0 K and V cache for all KV heads:
+// Dequantize one chunk of a q4_0 (KQ8: q8_0) K and q4_0 V cache for all KV heads:
 //   K16[h][key][D]              (row per key, D contiguous)
 //   Vp [h][key/2][DV] as half2  (lo lane = even key, hi lane = odd key: the PV A operand)
 // Keys from nkv_c up to the padded chunk are written as zeros (P is zero there too, and 0*garbage
 // could be NaN). Exact nibble values times the block scale, rounded once to half: identical to
 // the generic dequantizer.
+template <bool KQ8>
 static __global__ void fa_fold_dequant(
         const char * __restrict__ K, const char * __restrict__ V,
         half * __restrict__ K16, half2 * __restrict__ Vp,
@@ -411,17 +412,30 @@ static __global__ void fa_fold_dequant(
         const int key = 2*kp + r;
         float * vv = r == 0 ? vlo : vhi;
         if (key < nkv_c) {
-            const block_q4_0 * bk = (const block_q4_0 *) (K + h*nbk2 + (int64_t) (kv_off + key)*nbk1) + b;
             const block_q4_0 * bv = (const block_q4_0 *) (V + h*nbv2 + (int64_t) (kv_off + key)*nbv1) + b;
-            const float dk = __half2float(bk->d);
             const float dv = __half2float(bv->d);
             half kk[QK4_0];
+            if constexpr (KQ8) {
+                // q8_0 blocks are 32 values too (QK8_0 == QK4_0), so the row/block indexing is unchanged
+                const block_q8_0 * bk = (const block_q8_0 *) (K + h*nbk2 + (int64_t) (kv_off + key)*nbk1) + b;
+                const float dk = __half2float(bk->d);
+#pragma unroll
+                for (int j = 0; j < QK8_0; j++) {
+                    kk[j] = __float2half(dk*(float) bk->qs[j]);
+                }
+            } else {
+                const block_q4_0 * bk = (const block_q4_0 *) (K + h*nbk2 + (int64_t) (kv_off + key)*nbk1) + b;
+                const float dk = __half2float(bk->d);
+#pragma unroll
+                for (int j = 0; j < QK4_0/2; j++) {
+                    const int qk = bk->qs[j];
+                    kk[j]           = __float2half(dk*(float) ((qk & 0xF) - 8));
+                    kk[j + QK4_0/2] = __float2half(dk*(float) ((qk >> 4)  - 8));
+                }
+            }
 #pragma unroll
             for (int j = 0; j < QK4_0/2; j++) {
-                const int qk = bk->qs[j];
                 const int qv = bv->qs[j];
-                kk[j]           = __float2half(dk*(float) ((qk & 0xF) - 8));
-                kk[j + QK4_0/2] = __float2half(dk*(float) ((qk >> 4)  - 8));
                 vv[j]           = dv*(float) ((qv & 0xF) - 8);
                 vv[j + QK4_0/2] = dv*(float) ((qv >> 4)  - 8);
             }
@@ -1309,11 +1323,13 @@ static bool fa_fold_sass_launch(const int which, const dim3 grid, cudaStream_t s
 
 static bool ggml_cuda_fa_fold_usable(const ggml_tensor * dst) {
     static const int mode = ggml_cuda_fa_fold_env("GGML_CUDA_FA_FOLD", 1);
+    // GGML_CUDA_FA_FOLD_Q8K=0: a q8_0 K cache (with q4_0 V) back to the generic GEMM path
+    static const bool fold_q8k = ggml_cuda_fa_fold_env("GGML_CUDA_FA_FOLD_Q8K", 1) != 0;
     const ggml_tensor * Q = dst->src[0];
     const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];
     return mode != 0 && !ggml_cuda_fa_gemm_prec32() &&
-        K->type == GGML_TYPE_Q4_0 && V->type == GGML_TYPE_Q4_0 &&
+        (K->type == GGML_TYPE_Q4_0 || (fold_q8k && K->type == GGML_TYPE_Q8_0)) && V->type == GGML_TYPE_Q4_0 &&
         K->ne[0] == V->ne[0] && K->ne[0] % 128 == 0 && K->ne[0] <= 512 &&
         K->ne[2] == V->ne[2] && Q->ne[1]*(Q->ne[2]/K->ne[2]) <= 65535*fa_fold::BN;
 }
@@ -1458,7 +1474,7 @@ static void ggml_cuda_flash_attn_ext_fold(ggml_backend_cuda_context & ctx, ggml_
         static const int64_t dump_min = ggml_cuda_fa_fold_env("GGML_CUDA_FA_DUMP_MIN_NKV", 250000);
         static std::mutex dump_mu;
         static int dump_call = 0;
-        if (dump_dir && nkv >= dump_min && ns == 1) {
+        if (dump_dir && nkv >= dump_min && ns == 1 && K->type == GGML_TYPE_Q4_0) { // the dump format is raw q4_0 rows
             int id;
             {
                 std::lock_guard<std::mutex> lock(dump_mu);
@@ -1546,7 +1562,7 @@ static void ggml_cuda_flash_attn_ext_fold(ggml_backend_cuda_context & ctx, ggml_
                 const int nb  = (int) (D/QK4_0);
                 const int kpb = 256/nb;
                 const int npairs = ntile*TK/2;
-                fa_fold_dequant<<<dim3((npairs + kpb - 1)/kpb, nz, 1), kpb*nb, 0, stream>>>(
+                (K->type == GGML_TYPE_Q8_0 ? fa_fold_dequant<true> : fa_fold_dequant<false>)<<<dim3((npairs + kpb - 1)/kpb, nz, 1), kpb*nb, 0, stream>>>(
                     (const char *) K->data + s*K->nb[3], (const char *) V->data + s*V->nb[3],
                     K16.ptr, Vp.ptr, K->nb[1], K->nb[2], V->nb[1], V->nb[2], (int) D, g, (int) C);
                 fa_fold_qk2<<<dim3(ntile, (N + BN - 1)/BN, nz), 256, 0, stream>>>(K16.ptr, Qf16.ptr, mview.data,
@@ -1564,7 +1580,7 @@ static void ggml_cuda_flash_attn_ext_fold(ggml_backend_cuda_context & ctx, ggml_
                 const int nb  = (int) (D/QK4_0);
                 const int kpb = 256/nb;   // key pairs per block
                 const int npairs = ntile*TK/2;
-                fa_fold_dequant<<<dim3((npairs + kpb - 1)/kpb, nz, 1), kpb*nb, 0, stream>>>(
+                (K->type == GGML_TYPE_Q8_0 ? fa_fold_dequant<true> : fa_fold_dequant<false>)<<<dim3((npairs + kpb - 1)/kpb, nz, 1), kpb*nb, 0, stream>>>(
                     (const char *) K->data + s*K->nb[3], (const char *) V->data + s*V->nb[3],
                     K16.ptr, Vp.ptr, K->nb[1], K->nb[2], V->nb[1], V->nb[2], (int) D, g, (int) C);
                 CUDA_CHECK(cudaGetLastError());
