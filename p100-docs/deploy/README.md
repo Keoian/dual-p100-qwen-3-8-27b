@@ -65,8 +65,10 @@ is no P2P with JEV loaded until a supervised test. Env switches of the script: `
 `JEV_KV=q4_0` (smaller decision cache, ~67 MiB/GPU less, KL 3.5e-4 vs f16), `MMDEV=` (projector on the default
 device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `ALIAS=`, `API_KEY_FILE=` (no key),
 `CTX=`, `BUILD=`, `MODEL=`, `JEV_DIR=`. Why each choice: [QUICKSTART.md](../QUICKSTART.md).
-`start-qwen-vision.sh` (copy it next to `start-qwen.sh`) runs the same server without JEV and with images capped
-at 2560x1440's pixel area (`IMAGE_MAX_TOKENS=3600`), for screenshots with small text; numbers in its header.
+`start-qwen-vision.sh` (copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision` from the
+`vision-1440p` branch) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->
+0.00116), the Q8_0 vision projector and images up to 2560x1440's pixel area (`IMAGE_MAX_TOKENS=3600`); numbers in
+its header. New start-qwen.sh switches for it: `CTK=`, `CTV=` (cache types), `UB=` (micro-batch).
 
 ## Pinned inputs
 

@@ -4,3 +4,4 @@ cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e  /work/models/m
 8256776bac46e653a3e126ab4e8d5e6d0eed73e7fa6f1e55306083607e44753d  /work/jev/JEV-27B/head.safetensors
 902f4f26fdf1b92224c32b706ee6cea381f6465621c82975bf7e0023c02d9dd2  /work/jev/JEV-27B/calibration.json
 c1ef3fe7292d6152502877d25dbcca546995732574643310c0da0c69acce647f  /work/jev/gguf/jev-27b-lora-f16.gguf
+2e968a6af97ce35d8971890b257b9b7edabf20ad91450501fa53162a19ee33eb  /work/models-vision/mmproj-Qwen3.8-27B-Q8_0.gguf
