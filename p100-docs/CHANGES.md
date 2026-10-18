@@ -549,6 +549,22 @@ Q8_0 0.9352-0.9403 across runs (the spread is one or two 9-10 px code rows of 42
 - q4p q8_0 K shapes: NSPLIT 2 or PT 4 exceed 64 KB shared memory at 5 tokens; NSPLIT 2 PT 1 is slower.
 - `-ub 2048` at 240k; image caps above 4096 tokens at 262k (6000 OOMs on GPU1).
 
+**Context checkpoints and the RAM prompt cache with 48 GB of host RAM** (10-18, `/work/bench/ckpt`). A 58k-token chat
+built turn by turn (each request resends the conversation, as a chat client does), then branches back to turns 5, 3
+and 1, each twice. Checkpoints are taken near the end of each request (149.6 MiB each), so `-ctxcp` sets how many turns
+back an edit or branch is cheap:
+
+| branch back to | `-ctxcp 4` (default) | `-ctxcp 32` |
+|---|---|---|
+| turn 5 | 1,054 tokens, 4.0 s | 30 tokens, 0.5 s |
+| turn 3 | 27,761 tokens, 77.5 s (checkpoint evicted) | 30 tokens, 0.5 s |
+| turn 1 | 8,748 tokens, 23.2 s | 30 tokens, 0.5 s |
+
+Repeats of a branch were byte-identical in both. RAM prompt cache: returning to each of four other ~28k-token chats
+re-processed ~1,034 tokens (3.4 s, the last ubatch before the end-of-prompt checkpoint) instead of ~28k (75-80 s), with
+8 or 24 GiB alike (they fit in both). start-qwen-vision.sh now sets `-ctxcp 32 --cache-ram 24576` (new start-qwen.sh
+switches `CTXCP`, `CACHE_RAM`; defaults unchanged); worst case ~32 GB of host RAM.
+
 **Served, measured through the script** (build-vision, 150 W): test-backend-ops 16,711/16,711 on both cards; vision
 suite 0.9352; Ember 10 turns at 25k: TTFT median 474 ms, decode 36.5 t/s (q4_0/q4_0 JEV off: 460 ms, 32.2); fill to
 255k 358 -> 144 t/s (q4_0/q4_0 `-ub 2048`: 386 -> 144); 1440p image at 258,866 tokens: prompt 31.5 s, decode 27.8

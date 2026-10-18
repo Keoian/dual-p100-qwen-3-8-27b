@@ -31,6 +31,9 @@ MMDEV=${MMDEV-CUDA1}
 # other types fall back to generic kernels and need GGML_CUDA_FA_VEC_MAX_Q / GGML_CUDA_FA_GEMM_MINQ (QUICKSTART). UB = -ub
 CTK=${CTK:-q4_0}
 CTV=${CTV:-q4_0}
+# context checkpoints per slot (149.6 MiB of host RAM each on this model) and the RAM prompt cache in MiB (server default 8192)
+CTXCP=${CTXCP:-4}
+CACHE=(); [ -n "${CACHE_RAM:-}" ] && CACHE=(--cache-ram "$CACHE_RAM")
 # JEV-27B System 1 decisions on POST /v1/decide (separate context on the same model, LoRA bound there only);
 # JEV=0 serves without it. JEV_KV = decision-context cache type (q8_0 ~= f16 accuracy; q4_0 saves ~67 MiB per GPU)
 JEV=${JEV:-1}
@@ -47,7 +50,7 @@ export LD_LIBRARY_PATH="$BUILD/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20
 exec "$BUILD/bin/llama-server" -m "$MODEL" \
   -ngl 99 -sm tensor -fa 1 -ctk "$CTK" -ctv "$CTV" \
-  -c "$CTX" -b 32768 -ub "${UB:-2048}" -np 1 -ctxcp 4 \
+  -c "$CTX" -b 32768 -ub "${UB:-2048}" -np 1 -ctxcp "$CTXCP" "${CACHE[@]}" \
   --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 \
   -ngld 99 -ubd 64 -ctkd q4_0 -ctvd q4_0 \
   --alias "$ALIAS" --jinja --reasoning "$REASONING" --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 \

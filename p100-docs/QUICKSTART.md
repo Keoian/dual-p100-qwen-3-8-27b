@@ -182,6 +182,9 @@ an f16 cache 0.00274 -> 0.00116), `-ub 1024`, the ggml-org Q8_0 projector, image
   262k; 6000 does not.
 - **Speed vs q4_0/q4_0:** decode -4% at 64k (bytes, not code); prefill equal at the same `-ub`, 4-7% below the
   default script's `-ub 2048`, which doesn't fit beside a 1440p image at 262k (it does at ~240k).
+- **Host RAM:** `-ctxcp 32 --cache-ram 24576` (needs ~32 GB at worst; the reference box has 48 GB). With the default
+  `-ctxcp 4`, editing a message more than ~4 turns back re-processes the whole chat (27.8k tokens, 77 s in a test);
+  with 32, 0.5 s. On a 32 GB host use the defaults (`CTXCP=4 CACHE_RAM=8192`).
 - **VRAM:** idle 14,583 / 15,435 MiB; peaks 15,187 / 16,101 with a 1440p image at 258,866 tokens. If a card has
   less free memory than the reference board's, lower `CTX` (each 10k tokens frees ~130 MiB per card).
 

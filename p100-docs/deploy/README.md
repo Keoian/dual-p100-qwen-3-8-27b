@@ -68,7 +68,9 @@ device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, 
 `start-qwen-vision.sh` (copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision` from the
 `kv-q8q4-262k-vision1440-q8proj` branch) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->
 0.00116), the Q8_0 vision projector and images up to 2560x1440's pixel area (`IMAGE_MAX_TOKENS=3600`); numbers in
-its header. New start-qwen.sh switches for it: `CTK=`, `CTV=` (cache types), `UB=` (micro-batch).
+its header. New start-qwen.sh switches for it: `CTK=`, `CTV=` (cache types), `UB=` (micro-batch), `CTXCP=` (context
+checkpoints, default 4; the vision script uses 32) and `CACHE_RAM=` (RAM prompt cache in MiB; vision script 24576,
+sized for a 48 GB host: use `CTXCP=4 CACHE_RAM=8192` on 32 GB).
 
 ## Pinned inputs
 

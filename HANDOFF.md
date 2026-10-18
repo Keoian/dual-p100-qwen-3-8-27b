@@ -13,6 +13,8 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   most accurate cache that fits at full context, and the fastest accurate projector; JEV was dropped to make room.
 - Rollback on the box: `bash /work/start-qwen.sh.pre-vision` (tyler-port build-exp, JEV + q4_0/q4_0). The default
   `start-qwen.sh` gained `CTK`/`CTV`/`UB` switches with the old defaults.
+- Host RAM 48 GB since 10-18: the script keeps 32 context checkpoints and a 24 GiB RAM prompt cache (branching back 3 turns
+  in a 58k chat: 77.5 s -> 0.5 s). On a 32 GB host set `CTXCP=4 CACHE_RAM=8192`.
 - Margins: GPU1 peaks at 16,101 of 16,384 MiB (1440p image at 259k). `-ub 2048` and image caps above 4096 do not
   fit at 262k. Required env: `GGML_CUDA_FA_VEC_MAX_Q=16`, `GGML_CUDA_FA_GEMM_MINQ=17` (set by the script).
 - Open: image prompt time is now mostly the language model's prefill of 3,600 image tokens (~9.5 s); the vision PV
