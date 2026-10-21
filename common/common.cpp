@@ -2285,6 +2285,11 @@ struct ckpt_pool {
     std::unordered_map<void *, size_t> live;            // large blocks handed out: ptr -> bytes
     std::unordered_multimap<size_t, void *> free_blocks; // bytes -> ptr
     size_t cap = [] { const char * e = getenv("LLAMA_CKPT_POOL"); return e ? (size_t) atoll(e) : (size_t) 4; }();
+    // LLAMA_CKPT_PREFAULT (default 1): after a block is handed out and none of its size is left, fault in a spare one
+    // on a background thread. With many checkpoints per slot (-ctxcp 32) nothing is evicted for 32 requests, so every
+    // checkpoint was a fresh block and each short chat turn paid its ~0.1-0.16 s of page faults and zero fill.
+    bool prefault = [] { const char * e = getenv("LLAMA_CKPT_PREFAULT"); return !e || atoi(e) != 0; }();
+    bool refilling = false;
 };
 ckpt_pool & get_ckpt_pool() {
     static ckpt_pool pool;
@@ -2304,17 +2309,42 @@ void * common_ckpt_alloc(size_t n) {
     const size_t sz = (n + huge - 1)/huge*huge;
     auto & pool = get_ckpt_pool();
     std::lock_guard<std::mutex> lock(pool.mtx);
+    // keep one pre-faulted block of this size ready for the next checkpoint (pool.mtx held)
+    auto refill = [&pool, sz]() {
+        if (!pool.prefault || pool.refilling || pool.free_blocks.count(sz) > 0 || pool.free_blocks.size() >= pool.cap) {
+            return;
+        }
+        pool.refilling = true;
+        std::thread([sz]() {
+            void * q = aligned_alloc((size_t) 2 << 20, sz);
+            if (q != nullptr) {
+                memset(q, 0, sz);   // take the page faults here, off the request's path
+            }
+            auto & pl = get_ckpt_pool();
+            std::lock_guard<std::mutex> lk(pl.mtx);
+            pl.refilling = false;
+            if (q != nullptr) {
+                if (pl.free_blocks.size() < pl.cap) {
+                    pl.free_blocks.emplace(sz, q);
+                } else {
+                    free(q);
+                }
+            }
+        }).detach();
+    };
     auto it = pool.free_blocks.find(sz);
     if (it != pool.free_blocks.end()) {
         void * p = it->second;
         pool.free_blocks.erase(it);
         pool.live[p] = sz;
+        refill();
         return p;
     }
     void * p = aligned_alloc(huge, sz);
     if (p == nullptr) {
         throw std::bad_alloc();
     }
+    refill();
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
     // Off by default (LLAMA_CKPT_MADVISE=1 turns it on): with THP enabled "always" the block may get huge
     // pages anyway, but with THP defrag "madvise" (a common default) an madvised region compacts memory
