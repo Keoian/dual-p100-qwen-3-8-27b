@@ -572,6 +572,20 @@ re-processed ~1,034 tokens (3.4 s, the last ubatch before the end-of-prompt chec
 8 or 24 GiB alike (they fit in both). start-qwen-vision.sh now sets `-ctxcp 32 --cache-ram 24576` (new start-qwen.sh
 switches `CTXCP`, `CACHE_RAM`; defaults unchanged); worst case ~32 GB of host RAM.
 
+**Merge of Kmic's tip, `-b 2048`, checkpoint pre-fault** (branch `p100-optimizations-keoian`, 2026-10-21). Merge
+`77aac41cc` (see above): op suite 16743/16743, PPL 2.6074 / 2.6064, logits identical to the previous build for both
+cache types (max KLD 0.000004, 100% same top token), speed equal (ABBA).
+- `-b 2048` in start-qwen-vision.sh (new start-qwen.sh switch `NBATCH`, default 32768). With `-ub 1024` dividing it the
+  GPU passes are the same: a 112k prompt and three greedy answers (deterministic drafting) gave byte-identical text and
+  identical MTP draft counts (374/186, 327/216, 356/182) at both. A client that drops a 64k prompt after 60 s now frees
+  the server in 2.2 s instead of 33.1 s (cancellation is checked between batches). QUICKSTART's older "MTP needs
+  `-b 32768`" note was stale. Idea from Kmic's THREE-GPU.md (contributor @4claps).
+- `a15aafb95`: with `-ctxcp 32` nothing is evicted for 32 requests, so each checkpoint was a fresh 150 MiB block whose
+  page faults and zero fill landed inside the request (Ember TTFT 475 ms at `-ctxcp 4`, 639 at 32). A background thread
+  now keeps one pre-faulted block ready: 486 ms. `LLAMA_CKPT_PREFAULT=0` turns it off.
+- Full depth with these settings: fill to 255k 355 -> 144 t/s, 1440p image at 258,866 tokens prompt 31.6 s, decode
+  27.3 t/s, small text 96-100%, recall correct, peaks 15,185 / 16,099 MiB.
+
 **Served, measured through the script** (build-vision, 150 W): test-backend-ops 16,711/16,711 on both cards; vision
 suite 0.9352; Ember 10 turns at 25k: TTFT median 474 ms, decode 36.5 t/s (q4_0/q4_0 JEV off: 460 ms, 32.2); fill to
 255k 358 -> 144 t/s (q4_0/q4_0 `-ub 2048`: 386 -> 144); 1440p image at 258,866 tokens: prompt 31.5 s, decode 27.8

@@ -68,7 +68,7 @@ creative writing. Cards that have been under sustained load read ~5-10% lower.
 | `-ctk q4_0 -ctv q4_0` | q4_0 KV cache. An f16 cache doesn't fit at 262k |
 | `-c 262144` | the model's full context. Reserving it costs nothing until it fills |
 | `-np 1` | one server slot. Each slot allocates its own full KV cache |
-| `-b 32768` | **needed for MTP at long context.** A larger batch turns a long prompt into one huge batch, and draft acceptance collapses |
+| `-b 32768` | the logical batch. It changes nothing in the math: with `-ub` dividing it, the GPU passes are the same (2026-10-21, 112k prompt, greedy: `-b 32768` and `-b 2048` give byte-identical text and identical MTP draft counts). It sets how long a dropped client keeps the server busy, because cancellation is checked between batches: an abandoned 64k prompt held the slot ~33 s at 32768, ~2 s at 2048. An older note here said MTP needed 32768; that no longer holds. The vision script uses 2048 |
 | `-ub 2048` | tokens per GPU pass. 2048 is the fastest prefill that still leaves VRAM headroom at 262k, with or without vision |
 | `--spec-type draft-mtp` | speculative decoding with the model's built-in MTP head |
 | `--spec-draft-n-max 4 --spec-draft-p-min 0.2` | draft up to 4 tokens; stop below 20% confidence. Use 3 if you mostly work past ~150k context |
@@ -182,6 +182,7 @@ an f16 cache 0.00274 -> 0.00116), `-ub 1024`, the ggml-org Q8_0 projector, image
   262k; 6000 does not.
 - **Speed vs q4_0/q4_0:** decode -4% at 64k (bytes, not code); prefill equal at the same `-ub`, 4-7% below the
   default script's `-ub 2048`, which doesn't fit beside a 1440p image at 262k (it does at ~240k).
+- **Cancellation:** `-b 2048`: a client that drops a long prompt frees the server in ~2 s (~33 s at 32768), same output.
 - **Host RAM:** `-ctxcp 32 --cache-ram 24576` (needs ~32 GB at worst; the reference box has 48 GB). With the default
   `-ctxcp 4`, editing a message more than ~4 turns back re-processes the whole chat (27.8k tokens, 77 s in a test);
   with 32, 0.5 s. On a 32 GB host use the defaults (`CTXCP=4 CACHE_RAM=8192`).

@@ -5,7 +5,7 @@
 #   - Q8_0 vision projector (ggml-org mmproj-Qwen3.8-27B-Q8_0.gguf; -284 MiB on GPU1, within noise of BF16/F16)
 #   - KV cache K q8_0 / V q4_0 (KLD vs f16 cache 0.00274 -> 0.00116), decoded by the q4p kernel's q8_0-K variant
 #   - -ub 1024 (with the 262k q8_0/q4_0 cache, -ub 2048's larger GEMM scratch runs GPU1 out of memory on a 1440p image)
-#   - -ctxcp 32, --cache-ram 24576 (more prompt snapshots in host RAM, see below)
+#   - -ctxcp 32, --cache-ram 24576 (more prompt snapshots in host RAM, see below), -b 2048 (fast cancellation)
 #   - GGML_CUDA_FA_VEC_MAX_Q / GGML_CUDA_FA_GEMM_MINQ: 6-16 token batches to the vec kernel, 17+ to the GEMM path, so no
 #     batch reaches the tile kernel's whole-cache f16 conversion (which grows with depth and ran out of memory at 255k)
 # Measured 10-18 (P100 x2, 150 W, build-vision): gate PPL 2.6064, KLD vs f16 cache 0.00116 (q4_0/q4_0: 0.00274),
@@ -22,4 +22,7 @@ export GGML_CUDA_FA_VEC_MAX_Q=${GGML_CUDA_FA_VEC_MAX_Q:-16} GGML_CUDA_FA_GEMM_MI
 # 48 GB host: 32 checkpoints (4.8 GB) and a 24 GiB RAM prompt cache. 10-18, 58k-token chat built turn by turn, branch
 # back to turn 3: -ctxcp 4 re-processed 27,761 tokens (77.5 s), -ctxcp 32 30 tokens (0.5 s); answers byte-identical
 export CTXCP=${CTXCP:-32} CACHE_RAM=${CACHE_RAM:-24576}
+# -b 2048: a dropped client frees the server in ~2 s instead of ~33 s (10-21, 64k prompt dropped after 60 s); greedy output,
+# MTP draft counts and speed at 112k context byte-identical to -b 32768
+export NBATCH=${NBATCH:-2048}
 exec bash "$(dirname "$0")/start-qwen.sh" "$@"

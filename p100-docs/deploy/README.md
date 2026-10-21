@@ -70,7 +70,8 @@ device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, 
 0.00116), the Q8_0 vision projector and images up to 2560x1440's pixel area (`IMAGE_MAX_TOKENS=3600`); numbers in
 its header. New start-qwen.sh switches for it: `CTK=`, `CTV=` (cache types), `UB=` (micro-batch), `CTXCP=` (context
 checkpoints, default 4; the vision script uses 32) and `CACHE_RAM=` (RAM prompt cache in MiB; vision script 24576,
-sized for a 48 GB host: use `CTXCP=4 CACHE_RAM=8192` on 32 GB).
+sized for a 48 GB host: use `CTXCP=4 CACHE_RAM=8192` on 32 GB) and `NBATCH=` (`-b`, default 32768; the vision script
+uses 2048 so a dropped long prompt frees the server in ~2 s).
 
 ## Pinned inputs
 
