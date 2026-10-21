@@ -207,7 +207,7 @@ A/B testing.
 | `GGML_CUDA_FUSE_FFN_GLU=0` | the FFN gate, up and SwiGLU as three kernels again (bit-identical) |
 | `LLAMA_SPEC_BLOCK_VERIFY=0` | per-token draft verification instead of block verification (same output distribution; block accepts more) |
 | `GGML_CUDA_FA_Q4P_Q8K=0` | a q8_0 K cache back to the generic decode/verify kernels (vec, tile) instead of q4p's q8_0-K variant |
-| `GGML_CUDA_FA_FOLD_Q8K=0` | a q8_0 K cache back to the generic GEMM prefill attention instead of the fold kernels |
+| `GGML_CUDA_FA_FOLD=0` / `=2` | fold prefill attention off / also for f16 K or V (default 1: q4_0 and q8_0 K and V, Kmic's PR #3) |
 | `GGML_CUDA_FA_VEC_MAX_Q=N`, `GGML_CUDA_FA_GEMM_MINQ=N` | routing for caches without a direct tile path (default 2 / 128; the q8_0 setup needs 16 / 17, else the tile kernel's whole-cache f16 copy runs out of memory at depth) |
 | `LLAMA_MTP_DRAFT_VOCAB=0` | the MTP draft scores the full vocabulary instead of a small copy of the common tokens. Saves ~112 MiB per card, drafts get slower, output is unchanged |
 

@@ -539,7 +539,14 @@ noise on a 30-task suite (charts, 12 px tables, 13 px code, counts, OCR, small-t
 Q8_0 0.9352-0.9403 across runs (the spread is one or two 9-10 px code rows of 42).
 
 **Switches added:** `GGML_CUDA_FA_VEC_MAX_Q`, `GGML_CUDA_FA_GEMM_MINQ`, `GGML_CUDA_FA_Q4P_Q8K` (0: q8_0 K off q4p),
-`GGML_CUDA_FA_FOLD_Q8K` (0: q8_0 K off fold), compile-time `Q4P_K8_NSPLIT` / `Q4P_K8_PT`; start-qwen.sh `CTK`, `CTV`, `UB`.
+`GGML_CUDA_FA_FOLD_Q8K` (0: q8_0 K off fold; removed on `p100-optimizations-keoian`, see below), compile-time
+`Q4P_K8_NSPLIT` / `Q4P_K8_PT`; start-qwen.sh `CTK`, `CTV`, `UB`.
+
+**Superseded upstream (merge of Kmic's `d90ec36a3` into `p100-optimizations-keoian`, 2026-10-21).** Kmic's fork
+merged KaneQuah's PR #3 (`db05c1c07`), which generalises the fold dequant to q4_0, q8_0 and f16 for K and V in any
+combination (`GGML_CUDA_FA_FOLD=1` q4_0/q8_0, `=2` also f16, `=0` off). It is a superset of `19d593f8e` and dequantizes
+the same way (exact `d*q` in fp32, one rounding to half), so the merge keeps PR #3's code and drops ours with its
+`GGML_CUDA_FA_FOLD_Q8K` switch. The same merge brings back our softmax barrier as Kmic's PR #4 (identical lines).
 
 **Tried and not kept:**
 - Vision attention with fp32 accumulation (QK, PV or both): accurate, but 7.1-8.9 s, slower than the tile kernel.

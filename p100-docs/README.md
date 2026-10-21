@@ -46,6 +46,7 @@ Perplexity 2.6101, all-fp32 2.6095; at this size perplexity can't separate them,
 | [FINDINGS.md](FINDINGS.md) | what worked, what failed, what transfers to other Pascal cards, and the measurement traps |
 | [BUILD.md](BUILD.md) | building from source and verifying a build |
 | [deploy/](deploy/README.md) | tyler-port: container, build, pinned downloads, start script, power limit, acceptance checks |
+| [THREE-GPU.md](THREE-GPU.md) | measurements on three P100s from a contributor: NCCL, graphs, cancel latency |
 | [`../OPTLOG.md`](../OPTLOG.md) | the full record: every attempt, kept or reverted, with numbers |
 
 ## What's in it, briefly
