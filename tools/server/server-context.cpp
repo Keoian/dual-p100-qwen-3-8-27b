@@ -3673,8 +3673,14 @@ private:
                             /* is_prompt = */ true);
                         slot.prompt.tokens.push_back(cur_tok);
 
-                        // break at the last user message, or at user messages at least min step past the last checkpoint
-                        if (do_checkpoint && spans.is_user_start(slot.prompt.n_tokens())) {
+                        // break at the last user message, or at user messages at least min step past the last checkpoint.
+                        // Off by default: every such break is one more decode of the turn's few tokens and one more
+                        // checkpoint copy (~0.4 s per short chat turn on a recurrent model), and a conversation that
+                        // appends turns restores from the end-of-prompt checkpoints below instead. Only a client that
+                        // edits its last user message used it; it now rolls back to the previous turn's checkpoint.
+                        // LLAMA_CKPT_USER_SPLIT=1 restores the split.
+                        static const bool user_split = [] { const char * e = getenv("LLAMA_CKPT_USER_SPLIT"); return e && atoi(e) != 0; }();
+                        if (do_checkpoint && user_split && spans.is_user_start(slot.prompt.n_tokens())) {
                             const auto pos = slot.prompt.n_tokens();
                             const auto & checkpoints = slot.prompt.checkpoints;
 
