@@ -26,10 +26,12 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <mutex>
 #include <regex>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -2274,6 +2276,22 @@ void common_prompt_checkpoint::clear() {
     data_spec.clear();
 }
 
+// Freed large blocks are kept for the next checkpoint (LLAMA_CKPT_POOL blocks, default 4): checkpoints
+// of one slot all have the same size, and a fresh 150 MiB block pays ~38k first-touch page faults and the
+// kernel's zero fill (~0.1 s on a host whose RAM is mostly page cache) where a recycled one pays nothing.
+namespace {
+struct ckpt_pool {
+    std::mutex mtx;
+    std::unordered_map<void *, size_t> live;            // large blocks handed out: ptr -> bytes
+    std::unordered_multimap<size_t, void *> free_blocks; // bytes -> ptr
+    size_t cap = [] { const char * e = getenv("LLAMA_CKPT_POOL"); return e ? (size_t) atoll(e) : (size_t) 4; }();
+};
+ckpt_pool & get_ckpt_pool() {
+    static ckpt_pool pool;
+    return pool;
+}
+}
+
 void * common_ckpt_alloc(size_t n) {
     constexpr size_t huge = (size_t) 2 << 20;
     if (n < 2*huge) {
@@ -2284,6 +2302,15 @@ void * common_ckpt_alloc(size_t n) {
         return p;
     }
     const size_t sz = (n + huge - 1)/huge*huge;
+    auto & pool = get_ckpt_pool();
+    std::lock_guard<std::mutex> lock(pool.mtx);
+    auto it = pool.free_blocks.find(sz);
+    if (it != pool.free_blocks.end()) {
+        void * p = it->second;
+        pool.free_blocks.erase(it);
+        pool.live[p] = sz;
+        return p;
+    }
     void * p = aligned_alloc(huge, sz);
     if (p == nullptr) {
         throw std::bad_alloc();
@@ -2298,10 +2325,27 @@ void * common_ckpt_alloc(size_t n) {
         madvise(p, sz, MADV_HUGEPAGE);
     }
 #endif
+    pool.live[p] = sz;
     return p;
 }
 
 void common_ckpt_free(void * p) {
+    if (p == nullptr) {
+        return;
+    }
+    auto & pool = get_ckpt_pool();
+    {
+        std::lock_guard<std::mutex> lock(pool.mtx);
+        auto it = pool.live.find(p);
+        if (it != pool.live.end()) {
+            const size_t sz = it->second;
+            pool.live.erase(it);
+            if (pool.free_blocks.size() < pool.cap) {
+                pool.free_blocks.emplace(sz, p);
+                return;
+            }
+        }
+    }
     free(p);
 }
 
