@@ -1356,8 +1356,72 @@ json oaicompat_chat_params_parse(
 
     inputs.force_pure_content = opt.force_pure_content;
 
+    // the request's thinking mode: thinking unless switched off (server default, enable_thinking, reasoning_effort
+    // "none") or given a zero budget; decides the sampling defaults below
+    const int  client_budget = json_value(body, "reasoning_budget_tokens", json_value(body, "thinking_budget_tokens", -1));
+    const bool template_thinks = opt.use_jinja && common_chat_templates_support_enable_thinking(opt.tmpls.get());
+    const bool thinking = template_thinks && inputs.enable_thinking && client_budget != 0;
+
+    // LLAMA_THINK_BY_BUDGET=1: render a template that can think in thinking mode always, with one reasoning effort
+    // (LLAMA_THINK_TEMPLATE_EFFORT, default: the template's own), and turn thinking off by ending that render with the
+    // thinking-off generation prompt (an empty think block). Qwen3.8's template puts the effort instruction at the
+    // start of the system prompt, so a request that toggled thinking or effort changed the prompt's first tokens and
+    // reprocessed the whole cached conversation; now only the generation prompt differs, exactly as the template
+    // re-renders a past turn. A requested effort becomes a thinking budget (LLAMA_THINK_EFFORT_BUDGETS, default
+    // "low=512,medium=2048"; other levels: the server's --reasoning-budget).
+    static const bool think_by_budget = [] { const char * e = getenv("LLAMA_THINK_BY_BUDGET"); return e && atoi(e) != 0; }();
+    const bool tbb = think_by_budget && template_thinks && inputs.add_generation_prompt &&
+                     inputs.continue_final_message == COMMON_CHAT_CONTINUATION_NONE;
+    int effort_budget = -1;
+    if (tbb) {
+        static const std::string template_effort = [] { const char * e = getenv("LLAMA_THINK_TEMPLATE_EFFORT"); return std::string(e ? e : ""); }();
+        static const std::map<std::string, int> effort_budgets = [] {
+            const char * e = getenv("LLAMA_THINK_EFFORT_BUDGETS");
+            std::map<std::string, int> m;
+            for (const auto & kv : string_split<std::string>(e ? e : "low=512,medium=2048", ',')) {
+                const auto eq = kv.find('=');
+                if (eq != std::string::npos) {
+                    m[kv.substr(0, eq)] = atoi(kv.c_str() + eq + 1);
+                }
+            }
+            return m;
+        }();
+        std::string effort;
+        auto it = inputs.chat_template_kwargs.find("reasoning_effort");
+        if (it != inputs.chat_template_kwargs.end()) {
+            try { effort = json::parse(it->second).get<std::string>(); } catch (const std::exception &) {}
+            inputs.chat_template_kwargs.erase(it);
+        }
+        if (!template_effort.empty()) {
+            inputs.chat_template_kwargs["reasoning_effort"] = json(template_effort).dump();
+        }
+        auto eb = effort_budgets.find(effort);
+        if (eb != effort_budgets.end()) {
+            effort_budget = eb->second;
+        }
+        // the kwarg too: --reasoning off puts enable_thinking=false there, and kwargs override the flag
+        inputs.enable_thinking = true;
+        inputs.chat_template_kwargs["enable_thinking"] = "true";
+    }
+
     // Apply chat template to the list of messages
     auto chat_params = common_chat_templates_apply(opt.tmpls.get(), inputs);
+    if (tbb && !thinking) {
+        auto inputs_off = inputs;
+        inputs_off.enable_thinking = false;
+        inputs_off.chat_template_kwargs["enable_thinking"] = "false";
+        auto chat_off = common_chat_templates_apply(opt.tmpls.get(), inputs_off);
+        const std::string & gen_on  = chat_params.generation_prompt;
+        const std::string & gen_off = chat_off.generation_prompt;
+        if (!gen_on.empty() && !gen_off.empty() && string_ends_with(chat_params.prompt, gen_on) && string_ends_with(chat_off.prompt, gen_off)) {
+            std::string prompt = chat_params.prompt.substr(0, chat_params.prompt.size() - gen_on.size()) + gen_off;
+            chat_params = std::move(chat_off);
+            chat_params.prompt = std::move(prompt);
+        } else {
+            LOG_WRN("%s: LLAMA_THINK_BY_BUDGET: no generation prompt to splice, rendering with thinking off\n", __func__);
+            chat_params = std::move(chat_off);
+        }
+    }
 
     llama_params["chat_format"] = static_cast<int>(chat_params.format);
     llama_params["prompt"]      = chat_params.prompt;
@@ -1385,10 +1449,12 @@ json oaicompat_chat_params_parse(
 
     // Reasoning budget: pass parameters through to sampling layer
     {
-        int reasoning_budget = json_value(body, "reasoning_budget_tokens",
-                               json_value(body, "thinking_budget_tokens", -1));
+        int reasoning_budget = client_budget;
         if (reasoning_budget == -1) {
-            reasoning_budget = opt.reasoning_budget;
+            reasoning_budget = effort_budget >= 0 ? effort_budget : opt.reasoning_budget;
+        }
+        if (tbb && !thinking) {
+            reasoning_budget = -1; // the prompt already closed the think block
         }
 
         if (!chat_params.thinking_end_tags.empty()) {
@@ -1409,6 +1475,27 @@ json oaicompat_chat_params_parse(
         llama_params["n_probs"] = json_value(body, "top_logprobs", 20);
     } else if (body.contains("top_logprobs") && !body.at("top_logprobs").is_null()) {
         throw std::invalid_argument("top_logprobs requires logprobs to be set to true");
+    }
+
+    // LLAMA_SAMPLING_BY_MODE=1: sampling defaults per thinking mode for the fields a request leaves out, the model
+    // card's two sets for Qwen3.8 by default (LLAMA_SAMPLING_THINK / LLAMA_SAMPLING_NOTHINK: JSON objects of
+    // /completion sampling fields). One default set can't fit both: the GGUF carries the thinking one.
+    static const bool sampling_by_mode = [] { const char * e = getenv("LLAMA_SAMPLING_BY_MODE"); return e && atoi(e) != 0; }();
+    if (sampling_by_mode && template_thinks) {
+        static const auto load = [](const char * name, const char * def) {
+            const char * e = getenv(name);
+            try { return json::parse(e ? e : def); } catch (const std::exception &) {
+                LOG_WRN("%s: invalid JSON in %s, using %s\n", __func__, name, def);
+                return json::parse(def);
+            }
+        };
+        static const json s_think   = load("LLAMA_SAMPLING_THINK",   R"({"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0})");
+        static const json s_nothink = load("LLAMA_SAMPLING_NOTHINK", R"({"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5})");
+        for (const auto & item : (thinking ? s_think : s_nothink).items()) {
+            if (!body.contains(item.key())) {
+                llama_params[item.key()] = item.value();
+            }
+        }
     }
 
     // Copy remaining properties to llama_params
