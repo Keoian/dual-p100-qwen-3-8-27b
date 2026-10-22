@@ -4,6 +4,21 @@ Where the work stands, and what's worth doing next. For the gates, see `tools/ga
 tyler-port section below (the operator's mission brief lives outside the repo, `/work/CLAUDE.md` on the build box).
 For the results and changes, see `p100-docs/`; to bring the production setup up elsewhere, `p100-docs/deploy/`.
 
+## Branch `p100-optimizations-keoian` (state 2026-10-22; production on the reference box)
+
+- Branch contents:
+  - kv-q8q4-262k-vision1440-q8proj
+  - a merge of the base `p100-optimizations` d90ec36a3
+  - a background pre-fault of a spare context checkpoint
+  - `-b 2048` in the deploy script
+- Production on :8090 is `p100-docs/deploy/start-qwen-vision.sh` from `build-vision`.
+- Contributions back to the base: 11 PR branches `p100/<type>-<name>`, each cut from d90ec36a3 and validated there
+  (identical logits for every code PR, gate PPL 2.6074, full op suite with all but the first merged). One is a crash
+  fix for the base tip (FINDINGS, "Validating PRs").
+- In progress: the server renders Qwen3.8's template in thinking mode always. "Thinking off" becomes an appended empty
+  `<think>` close, so toggling never invalidates the prompt cache, and sampling follows the effective mode (FINDINGS,
+  same section).
+
 ## Branch `kv-q8q4-262k-vision1440-q8proj` (state 2026-10-18; production on the reference box)
 
 - Seven commits on tyler-port `67a7a1472` (CHANGES §18, FINDINGS "q8_0 K cache, 1440p images", QUICKSTART "1440p

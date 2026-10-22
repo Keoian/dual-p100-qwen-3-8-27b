@@ -268,6 +268,45 @@ CHANGES §16 lists the commits.
   - A vision suite of 30 tasks scored Q8_0 0.9403 once and 0.9352 later: the spread is one or two 9-10 px code rows.
     Compare answers to the reference too, not only scores.
 
+## Validating PRs against the base tip, thinking mode and sampling defaults (2026-10-21/22)
+
+- **The base tip aborts on 9-16-token batches under `-sm tensor`.**
+  - Failure: `GGML_ASSERT(!ggml_cuda_gemm_fold_glu_pending())`. The graph loop skips a SWIGLU when
+    `ggml_cuda_mul_mat_is_cublas_f16` says the down projection will reach the fold GEMM. The 9..16-column fp16
+    matvec route takes that matmul first, so nothing computes the GLU.
+  - It hits short chat turns and slot-restore suffixes, but no op test: `test-backend-ops` builds no graph with that
+    fusion, and only a whole model run trips it.
+  - The fix (the predicate asks the dispatch's own shape check) went to the base as a PR. This branch never
+    aborted: llama-bench pp9-16 runs clean.
+- **Re-measure every PR claim on the base, ABBA, and label the rest.** Several numbers measured on this branch didn't
+  hold on the base tip:
+  - A "3 of 4 distinct" restore result was 1 of 4 there.
+  - A -1.2% q4_0 decode reading was run order: ABBA gave 29.87 / 29.89 vs 29.91 / 29.84.
+  - A per-turn decode gap (45 vs 39 t/s) was reply length; on equal text without MTP it was 28.77 vs 28.75.
+  - A binary's RUNPATH loads whatever `build-*/bin` holds now. Set `LD_LIBRARY_PATH` to the snapshot under test, or
+    an op test checks the wrong library.
+  - `llama-perplexity` scores only the second half of each chunk (16 x 4096 = 32,752 tokens).
+- **Production served thinking sampling with thinking off.** The GGUF and QUICKSTART carry the card's thinking set
+  (temperature 1.0, top_p 0.95, top_k 20, presence 0). The card's non-thinking set is 0.7 / 0.80 / 20 / min_p 0 /
+  presence 1.5. Servers apply one default set; per-mode sampling is the client's job unless the server knows the mode.
+- **Qwen3.8's template puts the reasoning-effort instruction at the start of the system prompt.**
+  - Levels: xhigh (default) and low add a line; medium adds none.
+  - Toggling thinking or effort per request therefore changes the first tokens, and the whole cached prefix is
+    reprocessed (~75 s at 25k here). Qwen3 / DeepSeek / GLM templates only change the generation prompt.
+  - Measured on 8 short prompts, one run each, time to the first answer token, median / max:
+    - off 0.5 / 0.6 s
+    - low 3.5 / 8.3 s
+    - medium 4.9 / 20.8 s
+    - xhigh 4.0 / 10.5 s
+  - "low" doesn't reliably think less than xhigh.
+- **Thinking off can be a budget instead of a template switch.**
+  - Rendering in thinking mode with `thinking_budget_tokens: 0` gives answers indistinguishable from true off
+    (0 reasoning tokens, answers start in 0.3-0.8 s).
+  - Thinking toggled on and back off mid-conversation then reprocessed only the new turn (39, then 29 tokens, vs a
+    full ~1,900).
+  - Each budget-0 turn reprocessed its previous reply (~16 extra tokens), because the forced `</think>` isn't
+    byte-equal to how the template re-renders the past turn.
+
 ## What transfers to other Pascal cards
 
 - **Direct KV-cache dequantization** helps any pre-Volta GPU with a quantized KV cache, and more
