@@ -23,8 +23,9 @@ REASONING=${REASONING:-off}
 # prompt: a toggle reprocessed the whole chat, 2,146 -> 21 tokens); reasoning_effort low/medium = a 512/2048-token budget
 THINK_BY_BUDGET=${THINK_BY_BUDGET:-1}
 # SAMPLING_BY_MODE=1: the model card's sampling per thinking mode, for fields a request leaves out: thinking 1.0/0.95/20/0;
-# thinking off 0.7/0.8/20/0 with presence_penalty 0, not the card's 1.5: with MTP 1.5 cost ~20% decode (37.2 vs 46.9 t/s,
-# the drafter doesn't apply it). The CLI sampling below serves /completion, which has no thinking mode
+# thinking off 0.7/0.8/20/0 with presence_penalty 0 (operator's choice, 10-22) where the card says 1.5. 1.5 cost ~10-20%
+# decode until 0d920143d made the penalty sampler free (44.7 vs 44.2 t/s); for the card's value set NOTHINK_SAMPLING.
+# The CLI sampling below serves /completion, which has no thinking mode
 SAMPLING_BY_MODE=${SAMPLING_BY_MODE:-1}
 NOTHINK_SAMPLING=${NOTHINK_SAMPLING:-'{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":0.0}'}
 # model id clients see in /v1/models (instead of the file path)

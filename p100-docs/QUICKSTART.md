@@ -111,8 +111,10 @@ checkpoint buffers, and each checkpoint copy is ~150 MiB.
 request can still turn it on with `"chat_template_kwargs": {"enable_thinking": true}`. Qwen3.8's template puts its effort
 line at the top of the system prompt, so on a plain server that toggle reprocesses the whole cached chat; with
 `LLAMA_THINK_BY_BUDGET=1` it costs only the new turn, and `LLAMA_SAMPLING_BY_MODE=1` gives each mode the model card's
-sampling (CHANGES §19). With thinking off, use the card's 0.7 / 0.8 but presence_penalty 0, not 1.5: the MTP drafter
-doesn't apply the penalty, and 1.5 cost ~20% decode. `--image-max-tokens 1024`
+sampling (CHANGES §19). With thinking off the card says 0.7 / 0.8 and presence_penalty 1.5. Any
+repetition penalty used to cost 7-10% decode here, because the sampler scanned the whole vocabulary per token; since
+0d920143d it is free. Presence penalty only sees the last 64 tokens, so it guards against in-reply loops, not
+agentic ones. `--image-max-tokens 1024`
 because a 2875x1500 image is ~4100 tokens and ~19 s before the first byte; capped, ~4 s. The cap is a pixel budget: every
 image is resized to fit it with its aspect ratio kept, so 10 MP images (4380x2285 and a 2592x3888 portrait, tested
 10-07 on the JEV + vision production setup) also came out at ~1,020 tokens, ~5 s, with no extra projector memory. The projector

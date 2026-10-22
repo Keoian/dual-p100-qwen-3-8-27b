@@ -633,8 +633,25 @@ The GGUF and the base QUICKSTART carry only the thinking set, which had been ser
 | 0.7 / 0.8 / presence 0 (deployed) | 46.9 t/s | 0.537 |
 | 1.0 / 0.95 / presence 0 (before) | 44.9 t/s | 0.507 |
 
-The drafter samples without the penalty and proposes the repeats the target then penalizes. Note that presence
-penalty sees only the last 64 tokens, so it doesn't address agentic loops (repeated tool calls turns apart).
+Most of that cost turned out to be the penalty sampler itself, fixed below. Note that presence penalty sees only the
+last 64 tokens, so it doesn't address agentic loops (repeated tool calls turns apart).
+
+**The penalty sampler scanned the whole vocabulary (0d920143d).**
+- Cause: `llama_sampler_penalties_apply` looked up every candidate (~150k) in the window's count map for every
+  sampled token. With MTP that happens for each verified token.
+- Fix: penalties come first in the chain, where the candidates are still the vocabulary in id order, so it now
+  touches only the <= 64 window tokens at their own indices. Same arithmetic, so greedy text is identical (32 runs,
+  MTP and no MTP, presence 1.5 and 0), and test-sampling passes.
+- Decode at presence 1.5, before -> after: MTP 40.0 -> 44.7 t/s, no MTP 27.9 -> 30.0. Presence 0 is unchanged (44.2 /
+  30.0), so the card's 1.5 is now free.
+- Any client that sends `repeat_penalty` (many default to 1.1) gains the same.
+
+**Tried and not kept: the MTP draft applying the request's penalties** over the same window.
+- Acceptance at presence 1.5 fell 0.493 -> 0.462, and decode 40.0 -> 38.0 t/s. The draft head's flatter logits
+  over-react to the same subtraction.
+- The one greedy text it changed also changes when only the draft's top-k does (20 -> 10).
+- MTP and no-MTP greedy differ on the same 3 of 8 prompts with no penalty at all: verify-batch numerics on near
+  ties. Byte-identity across draft settings isn't a valid test on this stack.
 
 **Measured on the way:**
 - `reasoning_effort` per request: answer start median / max, low 3.5 / 8.3 s, medium 4.9 / 20.8, xhigh 4.0 / 10.5,
