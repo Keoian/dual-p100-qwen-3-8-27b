@@ -1,20 +1,22 @@
-# Deploy: the tyler-port production setup on a fresh machine
+# Deploy: the production setup on a fresh machine
 
-Brings a second machine to the state of the reference box: Qwen3.8-27B UD-Q6_K across two Tesla P100s at 262k
-context, MTP speculative decoding, vision, and JEV-27B System 1 decisions (`POST /v1/decide`), served
-OpenAI-compatible on port 8090. Reference box: Unraid host, ASUS H270 (GPU1 on a PCH Gen3 x4 link, no P2P),
-4-core i7, 32 GB RAM, driver 580, Docker with the NVIDIA runtime.
+Brings a second machine to the state of the reference box: Qwen3.8-27B UD-Q6_K across two Tesla P100s at the full
+262,144-token context with a q8_0 K / q4_0 V cache, MTP speculative decoding, the Q8_0 vision projector with images up
+to 1440p, served OpenAI-compatible on port 8090 (`start-qwen-vision.sh`, branch `p100-optimizations-keoian`). Reference
+box: Unraid host, ASUS H270 (GPU1 on a PCH Gen3 x4 link, no P2P), 4-core i7, 48 GB RAM, driver 580, Docker with the
+NVIDIA runtime. The older setup with JEV-27B System 1 decisions (`POST /v1/decide`, q4_0/q4_0, smaller images) is
+`start-qwen.sh` with its defaults.
 
 Files here: `Dockerfile`, `run-container.sh` (host), `unraid-user-script.sh` or the optional
 `unraid-user-script-stop-others.sh` (host, at array start), `build.sh`,
-`fetch.sh`, `start-qwen.sh`, `verify.sh` (inside the container), `SHA256SUMS`.
+`fetch.sh`, `start-qwen.sh`, `start-qwen-vision.sh`, `verify.sh` (inside the container), `SHA256SUMS`.
 
 ## Recipe
 
 **On the host** (paths are Unraid's; set `WORK` to any directory that becomes `/work` in the container):
 
 ```bash
-git clone -b tyler-port https://github.com/Keoian/dual-p100-qwen-3-8-27b /mnt/user/qwen-dev/src/llama.cpp
+git clone -b p100-optimizations-keoian https://github.com/Keoian/dual-p100-qwen-3-8-27b /mnt/user/qwen-dev/src/llama.cpp
 cd /mnt/user/qwen-dev/src/llama.cpp/p100-docs/deploy
 docker build -t qwen-dev:latest .
 bash run-container.sh            # stops nothing: refuses to start if the GPUs are busy; sets -pm 1 and -pl 150
@@ -30,14 +32,16 @@ plugin keeps scripts on the flash drive: `/boot/config/plugins/user.scripts/scri
 
 ```bash
 D=/work/src/llama.cpp/p100-docs/deploy
-bash $D/build.sh build-exp                      # ~60-90 min cold on 4 cores, sm_60 only
-bash $D/fetch.sh                                # model + mmproj + JEV files (pinned), LoRA conversion, sha256 check
+bash $D/build.sh build-vision                   # ~60-90 min cold on 4 cores, sm_60 only
+bash $D/fetch.sh                                # model, Q8_0 projector, JEV files (pinned), sha256 check
 umask 077; openssl rand -hex 32 > /work/qwen-api-keys   # one key per line, '#' lines ignored; never commit it
-cp $D/start-qwen.sh /work/start-qwen.sh
-setsid nohup bash /work/start-qwen.sh > /work/serve-8090.log 2>&1 &
+cp $D/start-qwen.sh $D/start-qwen-vision.sh /work/      # the vision script runs start-qwen.sh with its settings
+setsid nohup bash /work/start-qwen-vision.sh > /work/serve-8090.log 2>&1 &
 until curl -sf localhost:8090/health; do sleep 5; done   # ~1 min to load
 bash $D/verify.sh
 ```
+
+On a 32 GB host, start it with `CTXCP=4 CACHE_RAM=8192` (fewer context checkpoints, a smaller RAM prompt cache).
 
 Clients: `http://<host>:8090/v1`, model id `qwen3.8-27b`, header `Authorization: Bearer <key>`.
 Built-in web UI at `/`; `/health` is open.
