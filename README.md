@@ -1,3 +1,101 @@
+# Qwen3.8-27B on two Tesla P100s
+
+A fork of [Kmic-68's `p100-optimizations`](https://github.com/Kmic-68/llama.cpp/tree/p100-optimizations) (llama.cpp
+tuned for Pascal, sm_60). It's tuned further for a **consumer board without P2P** and for a **chat assistant's
+workload**: a long fixed system prompt, then short turns. The working branch is **`p100-optimizations-keoian`**,
+and it serves the numbers below in production.
+
+## What it runs
+
+- **Hardware:**
+  - 2x Tesla P100-PCIE-16GB at a 150 W power cap. No NVLink and no P2P: the second card sits behind the chipset
+    on PCIe 3.0 x4.
+  - 4-core i7, 48 GB RAM, Unraid with Docker, driver 580, CUDA 12.
+- **Model:** Qwen3.8-27B UD-Q6_K with its MTP head, plus the Q8_0 vision projector.
+- **Settings:**
+  - the full **262,144-token context**, tensor-parallel across both cards;
+  - KV cache **q8_0 K / q4_0 V**;
+  - MTP drafts of up to 4 tokens;
+  - images up to 2560x1440's pixel area;
+  - 32 context checkpoints and a 24 GiB RAM prompt cache.
+- **Memory:** everything is in VRAM. The worst case, a 1440p image at 259k tokens of context, peaks at 15,185 and
+  16,099 MiB of 16,384 per card.
+
+## Measured (this box, production build and settings, 2026-10-22)
+
+| | |
+|---|---|
+| plain decode | **30.7 t/s**; 26.2 at 64k context; 23.4 at 128k |
+| decode with MTP (chat replies) | **~43-45 t/s** (median 42.6 over 8 varied prompts, 44.7 on 256-token replies) |
+| prefill | **410 t/s** at 512 tokens, 413 at 2,048; filling the window to 255k runs 355 -> 144 t/s |
+| time to first token | **~0.5 s** for a short message on a 25k-token cached conversation |
+| 1440p screenshot | vision encoder ~5.7 s; small text 96-100% legible; at 259k context: 31.6 s to read it in, then 27.3 t/s |
+| accuracy | KV cache KLD vs an f16 cache **0.00116** (q4_0/q4_0: 0.00274), 99.1% same top token; perplexity 2.6064 |
+
+## What it adds over Kmic's branch
+
+Measured on Kmic's tip vs. his tip with each change (same box). Items marked *PR* are offered back to him.
+
+**Boards without P2P:** the tensor-parallel exchange is staged through pinned host memory and overlapped with the
+matmul. Prefill +14-20%, decode +2%; nothing changes on P2P boards. *PR*
+
+**Short prompts:** 17-64-token batches run as matvec chunks and narrow GEMM tiles. Prefill of 17 tokens 39 -> 93
+t/s, 64 tokens 126 -> 158. *PR*
+
+**A q8_0 K cache at q4_0 speed:** a fast decode kernel for q8_0 keys, plus routing switches that stop a 262k q8_0
+cache running out of memory. Decode +9%, +21% at 64k; the q4_0 default is unchanged. *PR*
+
+**Vision:** the encoder runs on the GEMM attention path. A 1440p image encodes in 7.5 -> 5.7 s. *PR*
+
+**Chat turns:**
+- Context checkpoints are reused instead of copied, with no THP stalls, a buffer pool and a background pre-fault.
+  Prompt time per short turn 1.3-1.5 s -> **0.7 s**. *PR*
+- MTP drafts are correct after any resume. Slot save/restore and the RAM cache reproduce the live continuation
+  exactly; restoring after generation reprocesses 4 tokens instead of 9,715. *PR*
+- Branching back 3 turns in a 58k chat takes 77.5 -> 0.5 s, from the larger checkpoint and RAM cache.
+- An abandoned 64k prompt frees the server in 33.1 -> 2.2 s (`-b 2048`). *PR (docs)*
+
+**Thinking and sampling:**
+- Turning thinking on or off per request keeps the prompt cache: a toggle reprocesses 21 tokens instead of 2,146.
+  (Qwen3.8's template puts its effort line at the top of the system prompt.)
+- Each mode gets the model card's sampling for fields a client leaves out.
+- `reasoning_effort` low / medium caps thinking at 512 / 2,048 tokens.
+
+**Repetition penalties are free:** the sampler no longer scans the whole 248k vocabulary for every token. Presence
+1.5 with MTP 40.0 -> 44.7 t/s, identical output. *PR*
+
+**Fixes:**
+- a GGML_ASSERT on 9-16-token prompts in Kmic's current tip (*PR*; this branch doesn't trigger it);
+- a use-after-free in the tensor-split backend (*PR*);
+- LoRA adapters under `-sm tensor` (*PR*).
+
+**Also:**
+- JEV-27B "System 1" decisions on `POST /v1/decide` (off in production);
+- `llama-vision-bench`;
+- a deploy kit (Dockerfile, checksummed model downloads, start scripts, Unraid startup scripts).
+
+## Run it
+
+[p100-docs/deploy/](p100-docs/deploy/README.md) brings a fresh Docker host with two P100s to this exact setup:
+
+1. Clone `-b p100-optimizations-keoian`.
+2. Build the image.
+3. `build.sh build-vision`, then `fetch.sh` (pinned, checksummed downloads).
+4. Start `start-qwen-vision.sh`.
+
+Clients use `http://<host>:8090/v1`.
+
+**Why each setting:** [p100-docs/QUICKSTART.md](p100-docs/QUICKSTART.md).
+**Every change with its numbers:** [p100-docs/CHANGES.md](p100-docs/CHANGES.md), sections 15-19.
+**What was learned:** [p100-docs/FINDINGS.md](p100-docs/FINDINGS.md).
+
+Built with Claude Code (AI-assisted). Every commit carries a `Co-Authored-By` trailer, and every number above was
+measured on the box described here.
+
+---
+
+**From Kmic's fork** (his summary and numbers, on a board with P2P):
+
 > **This is a fork of llama.cpp tuned for two Tesla P100s (sm_60).** On Qwen3.8-27B, plain decode
 > runs at 1.86x upstream's speed (17.5 -> 32.6 t/s), and ~3x with the model's built-in MTP head
 > (~54 t/s). Prefill runs at ~2x (250 -> 493 t/s at short context). The full 262k window fits with vision
@@ -5,23 +103,10 @@
 > The math is at least as accurate as stock: KLD against an fp32 run 0.00119, where upstream's
 > fp16 path reads 0.00152. It tracks upstream by merging.
 > See **[p100-docs/](p100-docs/README.md)** for results, changes and how to run it.
->
-> **Branch `tyler-port`** (boards without P2P, short chat turns, exact restore, and JEV-27B System 1 decisions on
-> `POST /v1/decide`) has a full bring-up recipe in **[p100-docs/deploy/](p100-docs/deploy/README.md)**. In short, on a
-> Docker host with two P100s:
->
-> ```bash
-> git clone -b tyler-port https://github.com/Keoian/dual-p100-qwen-3-8-27b /mnt/user/qwen-dev/src/llama.cpp
-> cd /mnt/user/qwen-dev/src/llama.cpp/p100-docs/deploy
-> docker build -t qwen-dev:latest . && bash run-container.sh     # sets the 150 W GPU power limit
-> docker exec -it qwen-dev bash                                   # then, inside:
-> D=/work/src/llama.cpp/p100-docs/deploy
-> bash $D/build.sh build-exp && bash $D/fetch.sh                  # sm_60 build; pinned model, mmproj, JEV
-> umask 077; openssl rand -hex 32 > /work/qwen-api-keys; cp $D/start-qwen.sh /work/
-> setsid nohup bash /work/start-qwen.sh > /work/serve-8090.log 2>&1 & bash $D/verify.sh
-> ```
->
-> Upstream's README follows.
+
+---
+
+Upstream's README follows.
 
 # llama.cpp
 
