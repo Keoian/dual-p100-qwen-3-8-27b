@@ -300,7 +300,7 @@ CHANGES §16 lists the commits.
     - xhigh 4.0 / 10.5 s
   - "low" doesn't reliably think less than xhigh.
 - **A repetition penalty cost 7-10% decode, through the sampler, not the model.** llama.cpp's penalty stage looked up all
-  ~150k candidates in its count map for every sampled token, and MTP samples every verified token. Visiting only the
+  248,320 candidates in its count map for every sampled token, and MTP samples every verified token. Visiting only the
   window's tokens made presence 1.5 free (MTP 40.0 -> 44.7 t/s, identical text). Teaching the MTP draft the penalty
   lowered acceptance instead (0.493 -> 0.462): its flatter logits over-react.
 - **MTP and no-MTP greedy text differ on near ties with no penalty at all** (3 of 8 prompts). Changing only the draft's

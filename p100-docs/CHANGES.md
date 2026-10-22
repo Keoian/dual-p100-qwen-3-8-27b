@@ -637,7 +637,7 @@ Most of that cost turned out to be the penalty sampler itself, fixed below. Note
 last 64 tokens, so it doesn't address agentic loops (repeated tool calls turns apart).
 
 **The penalty sampler scanned the whole vocabulary (0d920143d).**
-- Cause: `llama_sampler_penalties_apply` looked up every candidate (~150k) in the window's count map for every
+- Cause: `llama_sampler_penalties_apply` looked up every candidate (248,320 on Qwen3.8) in the window's count map for every
   sampled token. With MTP that happens for each verified token.
 - Fix: penalties come first in the chain, where the candidates are still the vocabulary in id order, so it now
   touches only the <= 64 window tokens at their own indices. Same arithmetic, so greedy text is identical (32 runs,
