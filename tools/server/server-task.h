@@ -78,6 +78,8 @@ struct task_params {
     bool timings_per_token   = false;
     bool post_sampling_probs = false;
 
+    std::vector<std::string> sensors; // System-1 sensor heads to read at the last prompt token ("*" = all)
+
     struct common_params_sampling sampling;
     struct common_params_speculative speculative;
 
@@ -343,6 +345,7 @@ struct server_task_result_cmpl_final : server_task_result {
 
     bool post_sampling_probs;
     std::vector<completion_token_output> probs_output;
+    json sensors; // {id: probability}, null when not requested
     std::vector<std::string>  response_fields;
 
     task_params generation_params;
@@ -376,6 +379,8 @@ struct server_task_result_cmpl_final : server_task_result {
         oai_resp_reasoning_id = state.oai_resp_reasoning_id;
         oai_resp_message_id = state.oai_resp_message_id;
     }
+
+    json to_json_impl();
 
     json to_json_non_oaicompat();
 

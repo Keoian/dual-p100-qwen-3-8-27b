@@ -235,6 +235,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
         routes.get_lora_adapters           = models_routes->proxy_get;
         routes.post_lora_adapters          = models_routes->proxy_post;
         routes.post_decide                 = models_routes->proxy_post;
+        routes.post_sensors                = models_routes->proxy_post;
+        routes.get_sensors                 = models_routes->proxy_get;
         routes.get_slots                   = models_routes->proxy_get;
         routes.post_slots                  = models_routes->proxy_post;
 
@@ -290,6 +292,10 @@ int llama_server(common_params & params, int argc, char ** argv) {
     // JEV System 1 decisions (needs --jev-lora / --jev-head)
     ctx_http.post("/decide",                   ex_wrapper(routes.post_decide));
     ctx_http.post("/v1/decide",                ex_wrapper(routes.post_decide));
+    // System-1 sensor bank (needs --sensor-bank)
+    ctx_http.post("/sensors",                  ex_wrapper(routes.post_sensors));
+    ctx_http.post("/v1/sensors",               ex_wrapper(routes.post_sensors));
+    ctx_http.get ("/v1/sensors",               ex_wrapper(routes.get_sensors));
     // Save & load slots
     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));

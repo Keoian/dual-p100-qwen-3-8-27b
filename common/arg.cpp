@@ -3656,6 +3656,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) { params.jev_type_v = kv_cache_type_from_str(value); }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--sensor-bank"}, "FNAME",
+        "System-1 sensor bank (bank.json next to bank.f32): linear heads over the hidden row of the last prompt token; enables POST /v1/sensors and the \"sensors\" request field (default: disabled)",
+        [](common_params & params, const std::string & value) { params.sensor_bank = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",
         [](common_params & params, const std::string & value) {

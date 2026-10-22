@@ -319,6 +319,19 @@ std::vector<unsigned char> completion_token_output::str_to_bytes(const std::stri
 //
 json server_task_result_cmpl_final::to_json() {
     GGML_ASSERT(is_updated && "update() must be called before to_json()");
+    json res = to_json_impl();
+    if (!sensors.is_null()) {
+        if (res.is_array() && !res.empty()) {
+            json & last = res.back();
+            (last.contains("data") && last.at("data").is_object() ? last.at("data") : last)["sensors"] = sensors;
+        } else if (res.is_object()) {
+            res["sensors"] = sensors;
+        }
+    }
+    return res;
+}
+
+json server_task_result_cmpl_final::to_json_impl() {
     switch (res_type) {
         case TASK_RESPONSE_TYPE_NONE:
             return to_json_non_oaicompat();

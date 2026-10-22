@@ -11,6 +11,7 @@
 #include "common.h"
 #include "fit.h"
 #include "jev.h"
+#include "sensors.h"
 #include "llama-cpp.h"
 #include "llama.h"
 #include "../../src/llama-ext.h" // llama_set_n_active_tokens (fixed-width verify)
@@ -297,6 +298,8 @@ struct server_slot {
     int32_t n_keep  = 0;
     int32_t i_batch = -1;
 
+    json sensor_values; // System-1 sensor reads at the last prompt token of the current task (null: none)
+
     // effective generation limit for the current task, -1 means unlimited
     int32_t n_predict_max = -1;
 
@@ -421,6 +424,7 @@ struct server_slot {
         generated_tokens.clear();
         generated_token_probs.clear();
         json_schema = json();
+        sensor_values = nullptr;
 
         task_prev = std::move(task);
         task.reset();
@@ -886,6 +890,9 @@ public:
     // note: video_params.ffmpeg_bin_dir points into params_base, which outlives this struct
     mtmd_helper_init_opt init_opt = mtmd_helper_init_opt_default();
     const llama_vocab * vocab = nullptr;
+    // System-1 sensor bank (/v1/sensors): linear heads over a hidden row the generation context already computes;
+    // no extra pass, no extra context. Rows come from the final-norm output (shared with MTP) or layer inputs.
+    sensor_bank sbank;
 
     server_queue    queue_tasks;
     server_response queue_results;
@@ -945,6 +952,7 @@ private:
     llama_adapter_lora_ptr jev_lora;
     llama_context_ptr      jev_ctx;
     jev_head               jev;
+
 
     bool add_bos_token = true;
 
@@ -1394,6 +1402,30 @@ private:
 
         if (!params_base.jev_lora.empty() && !jev_init()) {
             return false;
+        }
+
+        if (!params_base.sensor_bank.empty()) {
+            std::string err;
+            if (!sensor_bank_load(params_base.sensor_bank, sbank, err)) {
+                SRV_ERR("sensors: %s\n", err.c_str());
+                return false;
+            }
+            if (sbank.n_embd != llama_model_n_embd(model_tgt)) {
+                SRV_ERR("sensors: bank n_embd %d != model n_embd %d\n", sbank.n_embd, llama_model_n_embd(model_tgt));
+                return false;
+            }
+            // before the speculative init: MTP widens the final-norm output to every token (unmasked), never narrows it
+            for (int il : sbank.layers()) {
+                if (il < 0) {
+                    llama_set_embeddings_nextn(ctx_tgt, true, /*masked*/ true);
+                } else if (il < llama_model_n_layer(model_tgt)) {
+                    llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) il, true);
+                } else {
+                    SRV_ERR("sensors: layer %d >= n_layer %d\n", il, llama_model_n_layer(model_tgt));
+                    return false;
+                }
+            }
+            SRV_INF("sensors: %zu heads from '%s'\n", sbank.heads.size(), params_base.sensor_bank.c_str());
         }
 
         // Necessary similarity of prompt for slot selection
@@ -2293,6 +2325,41 @@ private:
         queue_results.send(std::move(res));
     }
 
+    // the hidden rows of the batch row that ends the prompt, read before the first token is sampled
+    json read_sensors(const server_slot & slot, int tok_idx) {
+        json out = json::object();
+        if (sbank.heads.empty()) {
+            out["error"] = "no sensor bank loaded (--sensor-bank)";
+            return out;
+        }
+        const auto t0 = ggml_time_us();
+        std::vector<int> want;
+        const auto & req = slot.task->params.sensors;
+        if (req.size() == 1 && req[0] == "*") {
+            for (size_t i = 0; i < sbank.heads.size(); i++) {
+                want.push_back((int) i);
+            }
+        } else {
+            for (const auto & id : req) {
+                const int i = sbank.find(id);
+                if (i < 0) {
+                    out[id] = nullptr;
+                } else {
+                    want.push_back(i);
+                }
+            }
+        }
+        const int n_embd = sbank.n_embd;
+        for (int i : want) {
+            const auto & h = sbank.heads[i];
+            const float * row = h.layer < 0 ? llama_get_embeddings_nextn_ith(slot.ctx_tgt, tok_idx)
+                                            : llama_get_embeddings_layer_inp(slot.ctx_tgt, (uint32_t) h.layer) + (size_t) tok_idx * n_embd;
+            out[h.id] = row ? json(sensor_eval(h, row, n_embd)) : json(nullptr);
+        }
+        SLT_INF(slot, "sensors: %zu heads in %.3f ms\n", want.size(), (ggml_time_us() - t0) / 1000.0);
+        return out;
+    }
+
     void send_final_response(server_slot & slot) {
         auto res = std::make_unique<server_task_result_cmpl_final>();
 
@@ -2327,6 +2394,7 @@ private:
         res->stopping_word         = slot.stopping_word;
         res->stop                  = slot.stop;
         res->post_sampling_probs   = slot.task->params.post_sampling_probs;
+        res->sensors               = slot.sensor_values;
 
         res->verbose           = slot.task->params.verbose;
         res->stream            = slot.task->params.stream;
@@ -4241,6 +4309,10 @@ private:
                 // prompt evaluated for next-token prediction
                 slot.state = SLOT_STATE_GENERATING;
 
+                if (!slot.task->params.sensors.empty()) {
+                    slot.sensor_values = read_sensors(slot, slot.i_batch - off);
+                }
+
                 if (slot.can_speculate()) {
                     common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());
                 }
@@ -5379,6 +5451,48 @@ void server_routes::init_routes() {
             body_parsed,
             files,
             TASK_RESPONSE_TYPE_OAI_CHAT);
+    };
+
+    // System-1 sensors over a chat state: {"messages", "tools"?, "heads": [ids] | "all"} -> {"sensors": {id: p}, ...}.
+    // Runs as a 0-token chat completion on the generation slot, so the cached prefix is reused and only the new
+    // suffix is processed.
+    this->post_sensors = [this](const server_http_req & req) -> server_http_res_ptr {
+        json body = json::parse(req.body);
+        if (!body.is_object()) {
+            auto res = create_response();
+            res->error(format_error_response("Request body must be an object", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        json heads = body.contains("heads") ? body.at("heads") : json("all");
+        body.erase("heads");
+        body["sensors"]    = heads;
+        body["max_tokens"] = 0;
+        body["stream"]     = false;
+        const server_http_req req2{ req.params, req.headers, req.path, req.query_string, body.dump(), req.files, req.should_stop };
+        auto res = this->post_chat_completions(req2);
+        if (res->status == 200 && !res->is_stream()) {
+            const json full = json::parse(res->data);
+            json out = { { "sensors", full.value("sensors", json::object()) } };
+            for (const char * k : { "model", "usage", "timings" }) {
+                if (full.contains(k)) {
+                    out[k] = full.at(k);
+                }
+            }
+            res->data = out.dump();
+        }
+        return res;
+    };
+
+    this->get_sensors = [this](const server_http_req &) {
+        auto res = create_response();
+        json heads = json::array();
+        for (const auto & h : ctx_server.sbank.heads) {
+            heads.push_back(json::parse(h.meta.dump()));
+        }
+        json info = json::parse(ctx_server.sbank.info.dump());
+        info["heads"] = heads;
+        res->ok(info);
+        return res;
     };
 
     this->post_chat_completions_tok = [this](const server_http_req & req) {

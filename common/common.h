@@ -704,6 +704,7 @@ struct common_params {
     int32_t     jev_n_batch = 512;           // batch and ubatch of the System 1 context
     ggml_type   jev_type_k  = GGML_TYPE_Q4_0; // smallest; f16/q8_0 are safe since the fattn_gemm_softmax barrier fix (q8_0 ~= f16)
     ggml_type   jev_type_v  = GGML_TYPE_Q4_0;
+    std::string sensor_bank;                 // System-1 sensor bank (bank.json + bank.f32; empty: /v1/sensors disabled)
 
     float slot_prompt_similarity = 0.1f;
 

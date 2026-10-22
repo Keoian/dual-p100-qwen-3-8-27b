@@ -155,6 +155,8 @@ struct server_routes {
     server_http_context::handler_t get_lora_adapters;
     server_http_context::handler_t post_lora_adapters;
     server_http_context::handler_t post_decide;
+    server_http_context::handler_t post_sensors;
+    server_http_context::handler_t get_sensors;
 
     // to be used in router mode
     json get_model_info() const;

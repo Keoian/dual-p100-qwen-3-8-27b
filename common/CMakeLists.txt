@@ -88,6 +88,8 @@ add_library(${TARGET}
     json-schema.h
     jev.cpp
     jev.h
+    sensors.cpp
+    sensors.h
     json.cpp
     json.h
     llguidance.cpp

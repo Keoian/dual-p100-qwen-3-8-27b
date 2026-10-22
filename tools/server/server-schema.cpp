@@ -75,6 +75,17 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
         ->set_hard_limits(-1, std::numeric_limits<int64_t>::max())
         ->set_desc("Set a time limit in milliseconds for the prediction phase. The timeout triggers if generation exceeds this time (measured since the first token) and a newline has been generated. Useful for FIM applications"));
 
+    add((new field_json("sensors"))
+        ->set_desc("System-1 sensor heads to read from the hidden state of the last prompt token (needs --sensor-bank): a list of head ids, or \"all\". The response gets a `sensors` object {id: probability}")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            const json & v = data.at("sensors");
+            if (v.is_string()) {
+                ctx.params.sensors = { v.get<std::string>() == "all" ? std::string("*") : v.get<std::string>() };
+            } else {
+                ctx.params.sensors = v.get<std::vector<std::string>>();
+            }
+        }));
+
     add((new field_json("response_fields"))
         ->set_desc("A list of response fields to return. Missing fields are omitted without error. Fields with a slash are unnested (e.g. generation_settings/n_predict moves n_predict to the root)")
         ->set_handler([&](field_eval_context & ctx, const json & data) {
