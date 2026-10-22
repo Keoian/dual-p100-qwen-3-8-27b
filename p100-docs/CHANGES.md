@@ -622,7 +622,7 @@ t/s, small text 96-100% per size, peaks 15,187 / 16,101 MiB (GPU1 ~280 MiB from 
 **`LLAMA_SAMPLING_BY_MODE=1`:** fills sampling fields a request leaves out from the model card's set for its
 effective mode:
 - thinking: 1.0 / 0.95 / 20 / 0;
-- thinking off: 0.7 / 0.8 / 20 / 0, with `presence_penalty` from `LLAMA_SAMPLING_NOTHINK` (card 1.5, deploy 0).
+- thinking off: 0.7 / 0.8 / 20 / 0, with `presence_penalty` from `LLAMA_SAMPLING_NOTHINK` (card 1.5; the deploy script used 0 until the penalty sampler fix below made 1.5 free, and 1.5 since).
 The GGUF and the base QUICKSTART carry only the thinking set, which had been served with thinking off. Client values win.
 
 **Presence penalty and MTP.** Live server, thinking off, 8 prompts x 256 tokens x 2:

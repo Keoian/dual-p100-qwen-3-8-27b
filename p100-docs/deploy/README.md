@@ -48,7 +48,7 @@ Built-in web UI at `/`; `/health` is open.
 LD_LIBRARY_PATH=/work/src/llama.cpp/build-exp/bin \
 GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
 LLAMA_THINK_BY_BUDGET=1 LLAMA_SAMPLING_BY_MODE=1 \
-LLAMA_SAMPLING_NOTHINK='{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":0.0}' \
+LLAMA_SAMPLING_NOTHINK='{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}' \
 build-exp/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
   -ngl 99 -sm tensor -fa 1 -ctk q4_0 -ctv q4_0 \
   -c 262144 -b 32768 -ub 2048 -np 1 -ctxcp 4 \
