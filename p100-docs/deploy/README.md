@@ -47,11 +47,13 @@ Built-in web UI at `/`; `/health` is open.
 ```bash
 LD_LIBRARY_PATH=/work/src/llama.cpp/build-exp/bin \
 GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
+LLAMA_THINK_BY_BUDGET=1 LLAMA_SAMPLING_BY_MODE=1 \
+LLAMA_SAMPLING_NOTHINK='{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":0.0}' \
 build-exp/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
   -ngl 99 -sm tensor -fa 1 -ctk q4_0 -ctv q4_0 \
   -c 262144 -b 32768 -ub 2048 -np 1 -ctxcp 4 \
   --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 -ngld 99 -ubd 64 -ctkd q4_0 -ctvd q4_0 \
-  --alias qwen3.8-27b --jinja --reasoning off --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 \
+  --alias qwen3.8-27b --jinja --reasoning off --temp 0.7 --top-k 20 --top-p 0.8 --min-p 0.0 \
   --slot-save-path /work/slots \
   --mmproj /work/models/mmproj-F16.gguf --image-max-tokens 1024 -mmdev CUDA1 \
   --api-key-file /work/qwen-api-keys \
@@ -63,7 +65,7 @@ build-exp/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
 `GGML_CUDA_P2P` is deliberately not set: on a board without peer access it enables nothing, and the operator's rule
 is no P2P with JEV loaded until a supervised test. Env switches of the script: `JEV=0` (no System 1),
 `JEV_KV=q4_0` (smaller decision cache, ~67 MiB/GPU less, KL 3.5e-4 vs f16), `MMDEV=` (projector on the default
-device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `ALIAS=`, `API_KEY_FILE=` (no key),
+device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `THINK_BY_BUDGET=0` / `SAMPLING_BY_MODE=0` / `NOTHINK_SAMPLING=<json>` (CHANGES §19), `ALIAS=`, `API_KEY_FILE=` (no key),
 `CTX=`, `BUILD=`, `MODEL=`, `JEV_DIR=`. Why each choice: [QUICKSTART.md](../QUICKSTART.md).
 `start-qwen-vision.sh` (copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision` from the
 `kv-q8q4-262k-vision1440-q8proj` branch) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->

@@ -18,6 +18,15 @@ IMAGE_MAX_TOKENS=${IMAGE_MAX_TOKENS-1024}
 # thinking off by default: chat apps that hide reasoning_content otherwise show nothing for a minute and time out.
 # A request can still enable it (chat_template_kwargs {"enable_thinking": true}); REASONING=auto = model default
 REASONING=${REASONING:-off}
+# THINK_BY_BUDGET=1: the template always renders in thinking mode and "thinking off" is its empty-think generation prompt,
+# so a request that toggles thinking keeps the cached prompt (Qwen3.8 puts its effort line at the top of the system
+# prompt: a toggle reprocessed the whole chat, 2,146 -> 21 tokens); reasoning_effort low/medium = a 512/2048-token budget
+THINK_BY_BUDGET=${THINK_BY_BUDGET:-1}
+# SAMPLING_BY_MODE=1: the model card's sampling per thinking mode, for fields a request leaves out: thinking 1.0/0.95/20/0;
+# thinking off 0.7/0.8/20/0 with presence_penalty 0, not the card's 1.5: with MTP 1.5 cost ~20% decode (37.2 vs 46.9 t/s,
+# the drafter doesn't apply it). The CLI sampling below serves /completion, which has no thinking mode
+SAMPLING_BY_MODE=${SAMPLING_BY_MODE:-1}
+NOTHINK_SAMPLING=${NOTHINK_SAMPLING:-'{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":0.0}'}
 # model id clients see in /v1/models (instead of the file path)
 ALIAS=${ALIAS:-qwen3.8-27b}
 # API keys, one per line (Authorization: Bearer <key>); API_KEY_FILE= (empty) serves without a key
@@ -51,11 +60,12 @@ mkdir -p /work/slots
 export LD_LIBRARY_PATH="$BUILD/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # CUDA graphs for the single-token MTP draft steps only; sampled drafts verified with the speculative-sampling rule
 export GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20
+export LLAMA_THINK_BY_BUDGET="$THINK_BY_BUDGET" LLAMA_SAMPLING_BY_MODE="$SAMPLING_BY_MODE" LLAMA_SAMPLING_NOTHINK="$NOTHINK_SAMPLING"
 exec "$BUILD/bin/llama-server" -m "$MODEL" \
   -ngl 99 -sm tensor -fa 1 -ctk "$CTK" -ctv "$CTV" \
   -c "$CTX" -b "$NBATCH" -ub "${UB:-2048}" -np 1 -ctxcp "$CTXCP" "${CACHE[@]}" \
   --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 \
   -ngld 99 -ubd 64 -ctkd q4_0 -ctvd q4_0 \
-  --alias "$ALIAS" --jinja --reasoning "$REASONING" --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 \
+  --alias "$ALIAS" --jinja --reasoning "$REASONING" --temp 0.7 --top-k 20 --top-p 0.8 --min-p 0.0 \
   --slot-save-path /work/slots "${VISION[@]}" "${AUTH[@]}" "${JEVARGS[@]}" \
   --host 0.0.0.0 --port 8090 "$@"

@@ -591,6 +591,57 @@ suite 0.9352; Ember 10 turns at 25k: TTFT median 474 ms, decode 36.5 t/s (q4_0/q
 255k 358 -> 144 t/s (q4_0/q4_0 `-ub 2048`: 386 -> 144); 1440p image at 258,866 tokens: prompt 31.5 s, decode 27.8
 t/s, small text 96-100% per size, peaks 15,187 / 16,101 MiB (GPU1 ~280 MiB from full).
 
+## 19. Thinking off as the template's own generation prompt, and sampling by thinking mode (2026-10-22, aa942a7d3)
+
+**The problem:** a toggle reprocessed the whole cached chat.
+- Qwen3.8's chat template writes a reasoning-effort line ("Reasoning effort is set to xhigh. ...") at the very start
+  of the system prompt whenever thinking is on.
+- The server ran `--reasoning off`. A request that turned thinking on, or changed effort, therefore changed the
+  prompt's first tokens, and the whole cached conversation was reprocessed: 2,146 tokens on a 2k chat, ~75 s at
+  Ember's 25k.
+- Qwen3 / DeepSeek / GLM templates only change the generation prompt; this one doesn't.
+
+**`LLAMA_THINK_BY_BUDGET=1`** (server-common.cpp; off by default, on in the deploy script):
+- It always renders the template in thinking mode, with one effort line (`LLAMA_THINK_TEMPLATE_EFFORT`, default: the
+  template's).
+- It turns thinking off by splicing on the thinking-off render's generation prompt
+  (`<|im_start|>assistant\n<think>\n\n</think>\n\n`). That is byte-equal to how the template re-renders a past turn.
+- A requested `reasoning_effort` becomes a thinking budget (`LLAMA_THINK_EFFORT_BUDGETS`, default
+  `low=512,medium=2048`); "none" means off.
+- The `enable_thinking` kwarg is set explicitly for each render, because `--reasoning off` stores `enable_thinking=false`
+  in the template kwargs, and those override the flag. The first build missed this and spliced two identical
+  thinking-off renders; the cache test caught it.
+
+**Results, production command, 2x P100:**
+- Every way of asking for no thinking (default, `enable_thinking: false`, `reasoning_effort: "none"`,
+  `thinking_budget_tokens: 0`) renders one prompt.
+- A toggle on a cached 2k chat reprocessed 21-42 tokens per turn instead of 1,964-2,146.
+- Answers without thinking start in 0.5-0.7 s with 0 reasoning tokens.
+- Ember TTFT median 503 ms (production before: 488).
+
+**`LLAMA_SAMPLING_BY_MODE=1`:** fills sampling fields a request leaves out from the model card's set for its
+effective mode:
+- thinking: 1.0 / 0.95 / 20 / 0;
+- thinking off: 0.7 / 0.8 / 20 / 0, with `presence_penalty` from `LLAMA_SAMPLING_NOTHINK` (card 1.5, deploy 0).
+The GGUF and the base QUICKSTART carry only the thinking set, which had been served with thinking off. Client values win.
+
+**Presence penalty and MTP.** Live server, thinking off, 8 prompts x 256 tokens x 2:
+
+| sampling | decode median | MTP acceptance |
+|---|---|---|
+| 0.7 / 0.8 / presence 1.5 (card) | 37.2 t/s | 0.449 |
+| 0.7 / 0.8 / presence 0 (deployed) | 46.9 t/s | 0.537 |
+| 1.0 / 0.95 / presence 0 (before) | 44.9 t/s | 0.507 |
+
+The drafter samples without the penalty and proposes the repeats the target then penalizes. Note that presence
+penalty sees only the last 64 tokens, so it doesn't address agentic loops (repeated tool calls turns apart).
+
+**Measured on the way:**
+- `reasoning_effort` per request: answer start median / max, low 3.5 / 8.3 s, medium 4.9 / 20.8, xhigh 4.0 / 10.5,
+  off 0.5 / 0.6.
+- "low" didn't think reliably less than xhigh, and medium (no line at all) thought longest.
+- Not kept: drafting at each request's temperature (acceptance 0.474 vs 0.477).
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,
