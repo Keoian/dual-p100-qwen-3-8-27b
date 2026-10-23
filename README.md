@@ -56,7 +56,8 @@ cache running out of memory. Decode +9%, +21% at 64k; the q4_0 default is unchan
 - Branching back 3 turns in a 58k chat takes 77.5 -> 0.5 s, from the larger checkpoint and RAM cache.
 - An abandoned 64k prompt frees the server in 33.1 -> 2.2 s (`-b 2048`). *PR (docs)*
 
-**Thinking and sampling:**
+**Thinking and sampling** (server env switches `LLAMA_THINK_BY_BUDGET=1` and `LLAMA_SAMPLING_BY_MODE=1`: off in the
+binary by default, on in the deploy script; QUICKSTART "Switches on this branch"):
 - Turning thinking on or off per request keeps the prompt cache: a toggle reprocesses 21 tokens instead of 2,146.
   (Qwen3.8's template puts its effort line at the top of the system prompt.)
 - Each mode gets the model card's sampling for fields a client leaves out.
@@ -73,7 +74,7 @@ cache running out of memory. Decode +9%, +21% at 64k; the q4_0 default is unchan
 
 **Also:**
 - JEV-27B "System 1" decisions on `POST /v1/decide` (off in production);
-- `llama-vision-bench` (*PR*, with the `-b 2048` docs);
+- [`llama-vision-bench`](tools/vision-bench/README.md) (*PR*, with the `-b 2048` docs);
 - a deploy kit (Dockerfile, checksummed model downloads, start scripts, Unraid startup scripts).
 
 ## Run it
@@ -83,11 +84,16 @@ cache running out of memory. Decode +9%, +21% at 64k; the q4_0 default is unchan
 1. Clone `-b p100-optimizations-keoian`.
 2. Build the image.
 3. `build.sh build-vision`, then `fetch.sh` (pinned, checksummed downloads).
-4. Start `start-qwen-vision.sh`.
+4. Create the API key file `/work/qwen-api-keys`. Without it the start script serves with no key at all.
+5. Start `start-qwen-vision.sh`.
 
 Clients use `http://<host>:8090/v1`.
 
-**Why each setting:** [p100-docs/QUICKSTART.md](p100-docs/QUICKSTART.md).
+The fork's `p100-optimizations` branch is an old snapshot of Kmic's (2026-10-01). His current branch is
+[Kmic-68/llama.cpp `p100-optimizations`](https://github.com/Kmic-68/llama.cpp/tree/p100-optimizations).
+
+**Why each setting** (and how it differs from Kmic's command): [p100-docs/QUICKSTART.md](p100-docs/QUICKSTART.md).
+**The exact production command:** [p100-docs/deploy/README.md](p100-docs/deploy/README.md).
 **Every change with its numbers:** [p100-docs/CHANGES.md](p100-docs/CHANGES.md), sections 15-20.
 **What was learned:** [p100-docs/FINDINGS.md](p100-docs/FINDINGS.md).
 

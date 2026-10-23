@@ -188,8 +188,8 @@ gh pr create --repo Kmic-68/llama.cpp --base p100-optimizations \
 Notes:
 - If `git cherry-pick` conflicts (Kmic's branch moved), apply section 2's diff by hand: add one `__syncthreads();`
   right after `vmax = red[0];` inside the `if (block_size > WARP_SIZE)` block of pass 1 in `fattn_gemm_softmax`.
-- Tyler's project rules: never force-push; never push to a remote other than `origin` (Keoian). The PR is opened
-  with `gh` from `origin`'s branch, which is fine. Ask Tyler before opening it if anything looks different from
+- Project rules: never force-push; never push to a remote other than `origin` (Keoian). The PR is opened
+  with `gh` from `origin`'s branch, which is fine. Ask the owner before opening it if anything looks different from
   this brief.
 - Build caveat from Kmic's docs: sm_60 only (`-DCMAKE_CUDA_ARCHITECTURES=60`). After editing a `.cu`/`.cuh`, rebuild
   `ggml-cuda`.

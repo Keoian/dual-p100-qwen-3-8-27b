@@ -3,6 +3,24 @@
 For two Tesla P100-16GB cards (or other Pascal sm_60 cards) running Qwen3.8-27B Q6_K with its
 built-in MTP head. Build first: see [BUILD.md](BUILD.md).
 
+The command below is Kmic's setup, for a board with P2P (its `-b 2048` came from this branch's docs PR). The
+production setup of branch `p100-optimizations-keoian` (a board without P2P, 150 W, 48 GB of host RAM) is
+`deploy/start-qwen-vision.sh`; its full expanded command is in [deploy/README.md](deploy/README.md) ("What
+`start-qwen-vision.sh` runs"), and its settings are explained in "Boards without P2P, chat apps, and slot
+save/restore", "1440p images and a q8_0 K cache" and "Switches on this branch" below. How the two differ:
+
+| setting | command below (Kmic's) | production (`start-qwen-vision.sh`) | why |
+|---|---|---|---|
+| KV cache | q4_0 / q4_0 | q8_0 K / q4_0 V | KLD vs an f16 cache 0.00274 -> 0.00116, at q4_0 speed with this branch's q4p q8_0-K kernel |
+| `-ub` / `-b` | 2048 / 2048 | 1024 / 2048 | `-ub 2048` runs GPU1 out of memory beside a 1440p image at 262k with the q8_0 K cache |
+| P2P | `GGML_CUDA_P2P=1` | not set | the reference board has none (GPU1 on a chipset x4 link) |
+| vision | `--mmproj` (Q8_0) on GPU0 | Q8_0 projector on GPU1 (`-mmdev CUDA1`), `--image-max-tokens 3600` | 2560x1440's pixel area keeps small text legible; GPU1 has the room |
+| checkpoints / RAM cache | server defaults (32, 8 GiB) | `-ctxcp 32 --cache-ram 24576` | a larger RAM prompt cache on a 48 GB host; on 32 GB use `CTXCP=4 CACHE_RAM=8192` |
+| attention routing | defaults | `GGML_CUDA_FA_VEC_MAX_Q=16 GGML_CUDA_FA_GEMM_MINQ=17` | required with a q8_0 K cache at 262k, else out of memory at depth |
+| thinking | template default (on) | `--reasoning off`, `LLAMA_THINK_BY_BUDGET=1` | chat apps that hide reasoning show nothing while it thinks; a toggle reprocesses 21-42 tokens, not the chat |
+| sampling | 1.0 / 0.95 / 20 / 0 | `LLAMA_SAMPLING_BY_MODE=1`: thinking off 0.7 / 0.8 / 20 / 0 with presence 1.5, thinking 1.0 / 0.95 / 20 / 0 | the model card has a separate thinking-off set |
+| access | :8080, no key | :8090, `--api-key-file`, `--alias qwen3.8-27b`, `--slot-save-path` | OpenAI-compatible clients |
+
 ## Run the server
 
 One command for text and vision. For vision, add the projector line shown below it.
@@ -98,11 +116,13 @@ projector on the second card instead and frees ~850 MiB on GPU0.
 
 **No P2P.** If `nvidia-smi topo -m` shows the cards behind different root ports (e.g. one slot wired to the chipset at
 x4), `cudaDeviceCanAccessPeer` is likely 0 and `GGML_CUDA_P2P=1` does nothing; leave it out. Keep `-sm tensor` (still
-faster than `-sm layer`); this branch stages the exchanges through pinned host memory. Measured on such a board
-(cards at 180 W; at the 150 W limit that board now needs, tg256 is 26.8, and 30.2 with MTP chat decode ~40 t/s after the §17 merge): tg256 27.8, pp2048 466, MTP decode in chat 38-40 t/s, a 10-40-token chat turn on a 26k cached prefix in ~0.56 s of
-server prompt time, 256k context with vision without running out of memory. Add `-ctxcp 4`: the server recycles 4
-checkpoint buffers, and each checkpoint copy is ~150 MiB (production keeps 32, with 48 GB of host RAM: "1440p images"
-below).
+faster than `-sm layer`); this branch stages the exchanges through pinned host memory. Measured on such a board at
+its 150 W limit with the production build and settings (2026-10-22, root README "Measured"): plain decode 30.7 t/s,
+MTP chat replies ~43-45 t/s, pp512 410 and pp2048 413 t/s, ~0.5 s to the first token for a short message on a 25k
+cached conversation, the full 262k context with a 1440p image without running out of memory. (The branch's first
+numbers, 10-06 at 180 W with q4_0/q4_0 and `-ub 2048`, are in CHANGES §15.) Each context checkpoint copy is ~150 MiB
+of host RAM: `start-qwen.sh` defaults to `-ctxcp 4` (llama-server's own default is 32), and the server recycles freed
+checkpoint buffers (a pool of 4). Production keeps 32, with 48 GB of host RAM ("1440p images" below).
 
 **Chat apps and vision.** For OpenAI-compatible clients add:
 
@@ -113,6 +133,10 @@ request can still turn it on with `"chat_template_kwargs": {"enable_thinking": t
 effort line at the top of the system prompt, so on a plain server that toggle reprocesses the whole cached chat; with
 `LLAMA_THINK_BY_BUDGET=1` it costs only the new turn, and `LLAMA_SAMPLING_BY_MODE=1` gives each mode the model card's
 sampling (CHANGES §19). With thinking off the card says 0.7 / 0.8 and presence_penalty 1.5, which production serves.
+With `LLAMA_SAMPLING_BY_MODE=1` the chat endpoints fill every sampling field a request leaves out from
+`LLAMA_SAMPLING_THINK` / `LLAMA_SAMPLING_NOTHINK`, so the CLI `--temp/--top-k/--top-p/--min-p/--presence-penalty`
+no longer apply to chat; they only serve `/completion`. Change the chat defaults through the two JSON sets
+(`start-qwen.sh`: `THINK_SAMPLING`, `NOTHINK_SAMPLING`).
 Any repetition penalty used to cost 7-10% decode here, because the sampler scanned the whole vocabulary per token;
 since 0d920143d it is free. Presence penalty only sees the last 64 tokens, so it guards against in-reply loops, not
 agentic ones. `--image-max-tokens 1024` (`start-qwen.sh`'s default) because a 2875x1500 image is ~4100 tokens and
@@ -127,9 +151,10 @@ encoder buffers): on GPU0 by default (without JEV, at 256k with an image GPU0 pe
 
 **Slot save/restore** (`--slot-save-path DIR`, then `POST /slots/0?action=save|restore {"filename": ...}`) writes
 `<name>` plus `<name>.draft` (MTP head cache), `<name>.spec` (MTP carry-over row) and `<name>.ckpt` (context
-checkpoints). Keep them together. A restored slot continues byte-identically to the live one (greedy, MTP on), and a
-request that diverges just before the saved end (e.g. the same chat without the generated reply) reprocesses only a
-few tokens. Slot files are client-driven: nothing is saved or restored automatically across a restart.
+checkpoints). Keep them together. `.ckpt` holds every context checkpoint the slot has at the time (~150 MiB each), so
+a save grows with `-ctxcp`: with production's 32 it can reach ~4.8 GB. A restored slot continues byte-identically to
+the live one (greedy, MTP on), and a request that diverges just before the saved end (e.g. the same chat without the
+generated reply) reprocesses only a few tokens. Slot files are client-driven: nothing is saved or restored automatically across a restart.
 The in-memory prompt cache (`--cache-ram`, 8 GiB by default) switches between recent prompts automatically while the
 server runs, also exactly.
 
@@ -193,9 +218,10 @@ an f16 cache 0.00274 -> 0.00116), `-ub 1024`, the ggml-org Q8_0 projector, image
 - **Speed vs q4_0/q4_0:** decode -4% at 64k (bytes, not code); prefill equal at the same `-ub`, 4-7% below the
   default script's `-ub 2048`, which doesn't fit beside a 1440p image at 262k (it does at ~240k).
 - **Cancellation:** `-b 2048`: a client that drops a long prompt frees the server in ~2 s (~33 s at 32768), same output.
-- **Host RAM:** `-ctxcp 32 --cache-ram 24576` (needs ~32 GB at worst; the reference box has 48 GB). With the default
-  `-ctxcp 4`, editing a message more than ~4 turns back re-processes the whole chat (27.8k tokens, 77 s in a test);
-  with 32, 0.5 s. On a 32 GB host use the defaults (`CTXCP=4 CACHE_RAM=8192`).
+- **Host RAM:** `-ctxcp 32 --cache-ram 24576` (needs ~32 GB at worst; the reference box has 48 GB). With
+  `start-qwen.sh`'s default `-ctxcp 4` (llama-server's own default is 32), branching back 3 turns in a 6-turn, 58k-token
+  chat re-processed the kept 27.8k tokens (77.5 s in a test); with 32, 30 tokens (0.5 s). On a 32 GB host use the
+  script's defaults (`CTXCP=4 CACHE_RAM=8192`).
 - **VRAM:** idle 14,583 / 15,435 MiB; peaks 15,187 / 16,101 with a 1440p image at 258,866 tokens. If a card has
   less free memory than the reference board's, lower `CTX` (each 10k tokens frees ~130 MiB per card).
 
@@ -209,7 +235,7 @@ A/B testing.
 | `GGML_CUDA_GEMM_FOLD=0` | prefill matmuls on stock cuBLAS fp16 instead of the fold kernel (fp16 products, fp32 sums) |
 | `GGML_CUDA_CUBLAS_COMPUTE_TYPE=f32` | prefill matmuls fully in fp32. ~40% slower, no measurable accuracy gain |
 | `GGML_CUDA_FA_GEMM=0` | turns off the GEMM attention path for long prefill (back to the tile kernel) |
-| `GGML_CUDA_FA_FOLD=0` | long-prefill attention on cuBLAS (fp16 over 2048-key chunks) instead of the fold kernels (fp16 over 128 keys, fp32 across) |
+| `GGML_CUDA_FA_FOLD=0` / `=2` | `=0`: long-prefill attention on cuBLAS (fp16 over 2048-key chunks) instead of the fold kernels (fp16 over 128 keys, fp32 across); `=2`: the fold kernels also for f16 K or V. Default 1: fold for q4_0 and q8_0 K and V (Kmic's PR #3) |
 | `GGML_CUDA_FA_PV2=0` | the older fold PV kernel (same accumulation, ~14% slower at 262k) |
 | `GGML_CUDA_FA_SASS=0`, `GGML_CUDA_GEMM_FOLD_SASS=0` | the compiler's build of the fold attention and fold GEMM kernels instead of the register-renamed SASS (bit-identical, slightly slower) |
 | `GGML_CUDA_GDN_CHUNKED=0` | the gated delta net as a per-token recurrence during prefill instead of chunked (same accuracy vs fp64, slower) |
@@ -218,9 +244,35 @@ A/B testing.
 | `GGML_CUDA_FUSE_FFN_GLU=0` | the FFN gate, up and SwiGLU as three kernels again (bit-identical) |
 | `LLAMA_SPEC_BLOCK_VERIFY=0` | per-token draft verification instead of block verification (same output distribution; block accepts more) |
 | `GGML_CUDA_FA_Q4P_Q8K=0` | a q8_0 K cache back to the generic decode/verify kernels (vec, tile) instead of q4p's q8_0-K variant |
-| `GGML_CUDA_FA_FOLD=0` / `=2` | fold prefill attention off / also for f16 K or V (default 1: q4_0 and q8_0 K and V, Kmic's PR #3) |
 | `GGML_CUDA_FA_VEC_MAX_Q=N`, `GGML_CUDA_FA_GEMM_MINQ=N` | routing for caches without a direct tile path (default 2 / 128; the q8_0 setup needs 16 / 17, else the tile kernel's whole-cache f16 copy runs out of memory at depth) |
 | `LLAMA_MTP_DRAFT_VOCAB=0` | the MTP draft scores the full vocabulary instead of a small copy of the common tokens. Saves ~112 MiB per card, drafts get slower, output is unchanged |
+
+## Switches on this branch (`p100-optimizations-keoian`)
+
+Added by this branch (CHANGES §15, §18, §19). Unset means the default; the kernel and checkpoint switches exist for
+A/B tests, the server ones change behaviour. Where `start-qwen.sh` sets one, its own switch is named.
+
+| variable | default | effect |
+|---|---|---|
+| `GGML_CUDA_AR_HOST` | on for two Pascal cards without P2P | host-staged tensor-parallel AllReduce for small (decode / verify) exchanges; `=0` sends them as driver-staged peer copies |
+| `GGML_CUDA_AR_HOST_MAX` | 1048576 (bytes) | largest exchange the host-staged path takes; larger (prefill) ones take the peer copy + ADD |
+| `GGML_CUDA_AR_BF16_THRESHOLD` | 0 (off) with the host-staged Pascal path, 1 elsewhere | tensors of at least this many bytes are reduced through a lossy fp32 -> bf16 round trip; this branch turns it off on Pascal |
+| `GGML_CUDA_XCHG_NOP2P` | 1 | overlaps the prefill exchange with the chunked matmul when the cards have no P2P; `=0` off |
+| `GGML_CUDA_MMVQ_CHUNK_MAX` | 28 | 9..N-column q6_K/q5_K batches run as fp16 mat-vec column chunks (at 9..16 the single-launch fp16 matvec goes first when its shape check accepts); `=0` sends them on to the GEMM paths |
+| `GGML_CUDA_MMVQ_CHUNK_ALL` | 0 | `=1` chunks every MMVQ type through the integer path (KLD +87%) |
+| `GGML_CUDA_GEMM_FOLD_NARROW` | 64 | batches up to N columns use the 32/64-column fold GEMM tiles (bit-identical); `=0` always 128 columns |
+| `GGML_CUDA_FUSE_CONV_DECODE` | 1 | single-token conv state chain (CONCAT, CPY, SSM_CONV, SILU) in one launch; `=0` off |
+| `LLAMA_CKPT_SKIP_CURRENT` | 1 | the server keeps a just-restored context checkpoint instead of copying it again; `=0` copies it |
+| `LLAMA_CKPT_USER_SPLIT` | 0 | `=1` restores the extra prompt split and checkpoint at the last user message |
+| `LLAMA_CKPT_MADVISE` | 0 | `=1` advises huge pages on checkpoint buffers (stalls with THP `defrag=madvise`) |
+| `LLAMA_CKPT_POOL` | 4 | freed checkpoint buffers kept for reuse |
+| `LLAMA_CKPT_PREFAULT` | 1 | a background thread keeps one pre-faulted checkpoint buffer ready; `=0` off |
+| `LLAMA_THINK_BY_BUDGET` | 0 (`start-qwen.sh`: `THINK_BY_BUDGET`, 1) | `=1`: the template always renders in thinking mode; thinking off is the off render's generation prompt spliced on, so toggles keep the prompt cache; `reasoning_effort` becomes a budget instead of the template's effort line |
+| `LLAMA_THINK_TEMPLATE_EFFORT` | the template's own | with `LLAMA_THINK_BY_BUDGET=1`: the one effort level rendered for every request |
+| `LLAMA_THINK_EFFORT_BUDGETS` | `low=512,medium=2048` | with `LLAMA_THINK_BY_BUDGET=1`: thinking-token budget per `reasoning_effort`; other levels use `--reasoning-budget` (-1 = unlimited), `none` turns thinking off |
+| `LLAMA_SAMPLING_BY_MODE` | 0 (`start-qwen.sh`: `SAMPLING_BY_MODE`, 1) | `=1`: chat requests get the sampling set of their thinking mode for every field they leave out (the CLI sampling flags then only serve `/completion`) |
+| `LLAMA_SAMPLING_THINK` | `{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}` (`start-qwen.sh`: `THINK_SAMPLING`) | the thinking set, a JSON object of sampling fields |
+| `LLAMA_SAMPLING_NOTHINK` | `{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}` (`start-qwen.sh`: `NOTHINK_SAMPLING`) | the thinking-off set |
 
 ## Benchmarking
 

@@ -9,7 +9,8 @@ NVIDIA runtime. The older setup with JEV-27B System 1 decisions (`POST /v1/decid
 
 Files here: `Dockerfile`, `run-container.sh` (host), `unraid-user-script.sh` or the optional
 `unraid-user-script-stop-others.sh` (host, at array start), `build.sh`,
-`fetch.sh`, `start-qwen.sh`, `start-qwen-vision.sh`, `verify.sh` (inside the container), `SHA256SUMS`.
+`fetch.sh`, `start-qwen.sh`, `start-qwen-vision.sh`, `verify.sh` (inside the container), `SHA256SUMS`, and `diag/`
+(test tools, below).
 
 ## Recipe
 
@@ -22,11 +23,19 @@ docker build -t qwen-dev:latest .
 bash run-container.sh            # stops nothing: refuses to start if the GPUs are busy; sets -pm 1 and -pl 150
 ```
 
-Then install `unraid-user-script.sh` with the User Scripts plugin, schedule "At Startup of Array" (the power limit
-resets on every reboot; `START_SERVER=1` in it also starts the server).
+`run-container.sh` starts the container with `--init`: a minimal init runs as PID 1 and reaps exited processes, so a
+`llama-server` killed for a restart doesn't stay a zombie (without it, `pgrep -x llama-server` keeps matching dead
+servers). The container restarts with Docker (`--restart unless-stopped`), but it only runs `sleep infinity`: nothing
+inside it starts the server.
+
+Then install `unraid-user-script.sh` with the User Scripts plugin, schedule "At Startup of Array". After a host reboot
+it sets the 150 W limit again (it resets on every boot) and, with `START_SERVER=1` set in the script, starts the
+production server (`/work/start-qwen-vision.sh`, log `/work/serve-8090.log`; `QWEN_SCRIPT=/work/start-qwen.sh`
+selects the JEV setup instead). Without `START_SERVER=1`, start the server by hand after a reboot (recipe below).
 Optional instead: `unraid-user-script-stop-others.sh` also stops other GPU containers first (`STOP_CONTAINERS`,
-default `llm-dev`), waits until the GPUs are free, then starts the server detached and reports when it is up. The
-plugin keeps scripts on the flash drive: `/boot/config/plugins/user.scripts/scripts/<name>/script`.
+default `llm-dev`), waits until the GPUs are free, then starts the same production script detached (same
+`QWEN_SCRIPT` switch and log) and reports when it is up. The plugin keeps scripts on the flash drive:
+`/boot/config/plugins/user.scripts/scripts/<name>/script`.
 
 **Inside the container** (`docker exec -it qwen-dev bash`):
 
@@ -43,16 +52,47 @@ bash $D/verify.sh
 
 On a 32 GB host, start it with `CTXCP=4 CACHE_RAM=8192` (fewer context checkpoints, a smaller RAM prompt cache).
 
+The start scripts leave out what they can't find, without an error: no `/work/qwen-api-keys` means **no API key at
+all** (the server is open to anyone who can reach :8090), a missing projector means text only, and a missing JEV LoRA
+means no `/v1/decide`. Create the key file before the first start, and check the arguments the server got (`ps -o args -C llama-server`).
+
 Clients: `http://<host>:8090/v1`, model id `qwen3.8-27b`, header `Authorization: Bearer <key>`.
 Built-in web UI at `/`; `/health` is open.
 
-## What `start-qwen.sh` runs
+## What `start-qwen-vision.sh` runs (production)
+
+Expanded from the script with its defaults; argument for argument the command of the running production server:
+
+```bash
+LD_LIBRARY_PATH=/work/src/llama.cpp/build-vision/bin \
+GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
+GGML_CUDA_FA_VEC_MAX_Q=16 GGML_CUDA_FA_GEMM_MINQ=17 \
+LLAMA_THINK_BY_BUDGET=1 LLAMA_SAMPLING_BY_MODE=1 \
+LLAMA_SAMPLING_NOTHINK='{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}' \
+LLAMA_SAMPLING_THINK='{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}' \
+build-vision/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
+  -ngl 99 -sm tensor -fa 1 -ctk q8_0 -ctv q4_0 \
+  -c 262144 -b 2048 -ub 1024 -np 1 -ctxcp 32 --cache-ram 24576 \
+  --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 -ngld 99 -ubd 64 -ctkd q4_0 -ctvd q4_0 \
+  --alias qwen3.8-27b --jinja --reasoning off --temp 0.7 --top-k 20 --top-p 0.8 --min-p 0.0 \
+  --slot-save-path /work/slots \
+  --mmproj /work/models-vision/mmproj-Qwen3.8-27B-Q8_0.gguf --image-max-tokens 3600 -mmdev CUDA1 \
+  --api-key-file /work/qwen-api-keys \
+  --host 0.0.0.0 --port 8090
+```
+
+With `LLAMA_SAMPLING_BY_MODE=1` the chat endpoints take their sampling defaults from the two JSON sets; the CLI
+`--temp/--top-k/--top-p/--min-p` then only serve `/completion`. Why each setting: [QUICKSTART.md](../QUICKSTART.md)
+("1440p images and a q8_0 K cache", "Switches on this branch").
+
+## What `start-qwen.sh` runs with its defaults (the earlier JEV setup)
 
 ```bash
 LD_LIBRARY_PATH=/work/src/llama.cpp/build-exp/bin \
 GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
 LLAMA_THINK_BY_BUDGET=1 LLAMA_SAMPLING_BY_MODE=1 \
 LLAMA_SAMPLING_NOTHINK='{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}' \
+LLAMA_SAMPLING_THINK='{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}' \
 build-exp/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
   -ngl 99 -sm tensor -fa 1 -ctk q4_0 -ctv q4_0 \
   -c 262144 -b 32768 -ub 2048 -np 1 -ctxcp 4 \
@@ -69,7 +109,8 @@ build-exp/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
 `GGML_CUDA_P2P` is deliberately not set: on a board without peer access it enables nothing, and the operator's rule
 is no P2P with JEV loaded until a supervised test. Env switches of the script: `JEV=0` (no System 1),
 `JEV_KV=q4_0` (smaller decision cache, ~67 MiB/GPU less, KL 3.5e-4 vs f16), `MMDEV=` (projector on the default
-device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `THINK_BY_BUDGET=0` / `SAMPLING_BY_MODE=0` / `NOTHINK_SAMPLING=<json>` (CHANGES §19), `ALIAS=`, `API_KEY_FILE=` (no key),
+device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `THINK_BY_BUDGET=0` / `SAMPLING_BY_MODE=0` / `NOTHINK_SAMPLING=<json>` / `THINK_SAMPLING=<json>` (CHANGES §19;
+QUICKSTART "Switches on this branch"), `ALIAS=`, `API_KEY_FILE=` (no key),
 `CTX=`, `BUILD=`, `MODEL=`, `JEV_DIR=`. Why each choice: [QUICKSTART.md](../QUICKSTART.md).
 `start-qwen-vision.sh` (production; copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision`, as in the
 recipe above) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->
@@ -103,16 +144,30 @@ uses 2048 so a dropped long prompt frees the server in ~2 s).
 
 ## Acceptance checks
 
-| check | expected on the reference board (150 W), `start-qwen.sh` with its defaults (JEV, build-exp) |
-|---|---|
-| `verify.sh` | health ok; decide ~0.9 s; chat ~2-3 s; idle VRAM ~14.3 / 15.4 GB |
-| `MODEL=/work/models/Qwen3.8-27B-UD-Q6_K.gguf ./tools/gate.sh` (with `ln -sfn build-exp build-opt`; server stopped) | PPL 2.6074 (band 2.6209 +/- 0.0199), tg256 ~30.2, FLASH_ATTN_EXT 3/3 |
-| an image question | ~5-6 s for any size up to 10 MP (resized to ~1,020 tokens) |
-| full depth (optional, ~25 min) | chat filled to ~255k with decisions + an image at 256k: no errors, GPU1 peak ~16.15 GB |
+The gate needs both GPUs: stop the server first. `tools/gate.sh` always measures a q4_0/q4_0 cache (its
+`llama-bench` and `llama-perplexity` lines pass `-ctk q4_0 -ctv q4_0`), and its default `MODEL` is not this layout's,
+so pass `MODEL=`.
 
-With `start-qwen-vision.sh` (production, build-vision; for the gate `ln -sfn build-vision build-opt`): idle VRAM
-~14.6 / 15.4 GB; Kmic's gate PPL 2.6064 with `-ctk q8_0`; a 1440p screenshot ~15 s at shallow depth; full depth
-(optional, ~45 min) chat filled to ~255k + a 1440p image at ~259k: prompt ~32 s, decode ~28 t/s, GPU1 peak ~16.1 GB.
-No `/v1/decide` (JEV off): `verify.sh` skips its decision check.
+| check | expected on the reference board (150 W), production: `start-qwen-vision.sh`, build-vision |
+|---|---|
+| `verify.sh` | health ok; "/v1/decide not served (JEV off): skipped"; a chat answer; idle VRAM ~14.6 / 15.4 GB |
+| `ln -sfn build-vision build-opt; MODEL=/work/models/Qwen3.8-27B-UD-Q6_K.gguf ./tools/gate.sh` | PPL 2.6074 (q4_0/q4_0; band 2.6209 +/- 0.0199), tg256 about 30 (30.2 in the 10-08 gate run), FLASH_ATTN_EXT 3/3 |
+| the served cache, from the repo root: `build-opt/bin/llama-perplexity -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf -f p100-handoff/ppl-orig.txt -sm tensor -ngl 99 -c 4096 -ctk q8_0 -ctv q4_0` (gate.sh's perplexity line with the q8_0 K cache) | PPL 2.6064 |
+| a 1440p screenshot | ~15 s at shallow depth |
+| full depth (optional, ~45 min) | chat filled to ~255k + a 1440p image at ~259k: prompt ~32 s, decode ~28 t/s, GPU1 peak ~16.1 GB |
+
+With `start-qwen.sh` and its defaults (the JEV setup, build-exp; for the gate `ln -sfn build-exp build-opt`):
+`verify.sh` health ok, decide ~0.9 s, chat ~2-3 s, idle VRAM ~14.3 / 15.4 GB; gate PPL 2.6074, tg256 ~30.2; an image
+question ~5-6 s for any size up to 10 MP (resized to ~1,020 tokens); full depth (optional, ~25 min) chat filled to
+~255k with decisions + an image at 256k: no errors, GPU1 peak ~16.15 GB.
+
+## Diagnostics (`diag/`)
+
+- `monitor.sh [file]`: every 2 s, synced to disk, VRAM, temperature, power, PCIe throughput and replay counters of
+  both GPUs and the AER error totals (default `/work/monitor.log`; run in the background, kill when done). The AER
+  device list is hardcoded to the reference board's PCI addresses (`0000:01:00.0`, `0000:00:01.0`, `0000:03:00.0`,
+  `0000:00:1b.4`): edit `aer()` for another board (`lspci` lists the GPUs and their root ports).
+- `ballast.cu`: holds GPU memory on one device until killed, to test with less VRAM headroom
+  (`nvcc -O2 -arch=sm_60 -o ballast ballast.cu`, then `ballast <device> <leave_free_MiB>`).
 
 Records of how these numbers were measured: [CHANGES.md §15-16, §18-20](../CHANGES.md), [FINDINGS.md](../FINDINGS.md).

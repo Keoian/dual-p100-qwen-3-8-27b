@@ -9,8 +9,11 @@ For the `p100-optimizations-keoian` branch (the default branch of Keoian/dual-p1
 which contains `tyler-port`: boards without P2P, a q8_0 K cache, 1440p images, JEV System 1, CHANGES §15-20) clone
 `-b p100-optimizations-keoian https://github.com/Keoian/dual-p100-qwen-3-8-27b` instead; [deploy/](deploy/README.md)
 has its container, build script (Ninja, ccache; production builds `build-vision`), pinned downloads and start
-scripts. `tools/gate.sh` expects `build-opt`: `ln -sfn build-vision build-opt`. The JEV LoRA converter needs
-`pip install numpy safetensors`.
+scripts. `tools/gate.sh` expects `build-opt` and defaults `MODEL` to Kmic's path, so on that layout run
+`ln -sfn build-vision build-opt; MODEL=/work/models/Qwen3.8-27B-UD-Q6_K.gguf ./tools/gate.sh` with the server stopped
+(the gate needs both GPUs). It measures a q4_0/q4_0 cache (PPL 2.6074); the served q8_0 K / q4_0 V cache reads 2.6064
+with the gate's perplexity command and `-ctk q8_0` in place of `-ctk q4_0` (deploy/README "Acceptance checks"). The
+JEV LoRA converter needs `pip install numpy safetensors`.
 
 The release bundle also carries the fork as one diff against the upstream commit it last merged:
 `diffs/all-code.diff`, with the base SHA in `diffs/UPSTREAM-BASE-SHA.txt`. To apply it to a

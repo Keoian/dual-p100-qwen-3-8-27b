@@ -1159,6 +1159,12 @@ In *router mode* the query param `?model={model_id}` has to be set. This endpoin
 
 `filename`: Name of the file to save the slot's prompt cache. The file will be saved in the directory specified by the `--slot-save-path` server parameter.
 
+Companion files are written next to it: `<filename>.draft` (the draft context's KV cache, with a draft model or MTP
+head), `<filename>.spec` (the MTP head's carry-over row) and `<filename>.ckpt` (the slot's context checkpoints, so a
+restored recurrent or hybrid model can continue from before the saved end). Restore reads them when present; keep them
+together. `.ckpt` holds every checkpoint the slot has (~150 MiB each for Qwen3.8-27B under `-sm tensor`), so it grows
+with `--ctx-checkpoints`.
+
 **Response format**
 
 ```json
@@ -1366,6 +1372,19 @@ The `response_format` parameter supports both plain JSON output (e.g. `{"type": 
 `chat_template_kwargs`: Allows sending additional parameters to the json templating system. For example: `{"enable_thinking": false}`
 
 `reasoning_effort`: If `none`, reasoning/thinking is disabled. Otherwise, the value is made available to the jinja template.
+
+With the env switch `LLAMA_THINK_BY_BUDGET=1` (this fork; off by default) and a template that can think, the server
+always renders the template in thinking mode, with one effort level (`LLAMA_THINK_TEMPLATE_EFFORT`, default: the
+template's own), and turns thinking off by ending that render with the thinking-off generation prompt. A request that
+toggles thinking or effort then changes only the generation prompt, and the cached conversation is kept. The requested
+`reasoning_effort` is not passed to the template: it becomes a thinking budget (`LLAMA_THINK_EFFORT_BUDGETS`, default
+`low=512,medium=2048`; other levels use `--reasoning-budget`), and `none` turns thinking off.
+
+With `LLAMA_SAMPLING_BY_MODE=1` (this fork; off by default) and a template that can think, every sampling field a chat
+request leaves out comes from the set for its thinking mode: `LLAMA_SAMPLING_THINK` (default
+`{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}`) or `LLAMA_SAMPLING_NOTHINK`
+(default `{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}`), both JSON objects of
+sampling fields. The command-line sampling flags then don't apply to chat requests; they still serve `/completion`.
 
 `reasoning_format`: The reasoning format to be parsed. If set to `none`, it will output the raw generated text.
 

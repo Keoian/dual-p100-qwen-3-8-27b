@@ -2969,8 +2969,9 @@ static void llama_sampler_penalties_apply(struct llama_sampler * smpl, llama_tok
     };
 
     // The candidates usually still are the whole vocabulary in token-id order here (penalties come first in the
-    // chain), so visit only the <= penalty_last_n distinct tokens in the window instead of looking up every one of
-    // ~150k candidates in the map: that loop cost 2 ms+ per sampled token, and MTP samples every verified token
+    // chain), so visit only the <= penalty_last_n distinct tokens in the window instead of looking up every
+    // candidate (the whole vocabulary, 248,320 on Qwen3.8) in the map: that loop cost 2 ms+ per sampled token,
+    // and MTP samples every verified token
     // (Qwen3.8, presence 1.5: decode -7% without MTP, -10% with). Same arithmetic on the same entries.
     bool in_id_order = true;
     for (const auto & [token, count] : ctx->token_count) {

@@ -279,6 +279,8 @@ CHANGES §16 lists the commits.
   - The fix (the predicate asks the dispatch's own shape check) went to the base as a PR (Kmic's #5). Production's
     configuration never aborted (llama-bench pp9-16 runs clean); since `400aac811` (10-22, CHANGES §20) this branch
     has the fix too.
+  - Workaround on a build without the fix: `GGML_CUDA_FOLD_GLU=0` turns the SwiGLU-into-fold-GEMM fusion off
+    (`ggml_cuda_gemm_fold_glu_ok`, gemm-fold.cu), so no GLU is ever skipped.
 - **Re-measure every PR claim on the base, ABBA, and label the rest.** Several numbers measured on this branch didn't
   hold on the base tip:
   - A "3 of 4 distinct" restore result was 1 of 4 there.

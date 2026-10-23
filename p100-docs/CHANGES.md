@@ -482,7 +482,7 @@ changed. Maximum KLD is a single token and moves with rounding alone (Q5_K_M `-u
 
 ## 18. Branch `kv-q8q4-262k-vision1440-q8proj`: a q8_0 K cache at 262k, 1440p images, Q8_0 projector (2026-10-17/18)
 
-Operator's goal (Tyler): the highest stable context with a q8_0 K / q4_0 V System-2 cache, the fastest and most
+Operator's goal: the highest stable context with a q8_0 K / q4_0 V System-2 cache, the fastest and most
 accurate vision projector (optimize the vision pipeline if needed), images large enough that small text stays
 legible, JEV dropped (`/v1/decide` off; frees ~1.1-1.3 GiB per card). Bar: PPL inside the gate band, KLD no worse
 than q4_0/q4_0, a vision suite within noise of the F16 projector. Result: all of it at the full 262,144 context.
@@ -562,7 +562,7 @@ built turn by turn (each request resends the conversation, as a chat client does
 and 1, each twice. Checkpoints are taken near the end of each request (149.6 MiB each), so `-ctxcp` sets how many turns
 back an edit or branch is cheap:
 
-| branch back to | `-ctxcp 4` (default) | `-ctxcp 32` |
+| branch back to | `-ctxcp 4` (start-qwen.sh's default; llama-server's own is 32) | `-ctxcp 32` |
 |---|---|---|
 | turn 5 | 1,054 tokens, 4.0 s | 30 tokens, 0.5 s |
 | turn 3 | 27,761 tokens, 77.5 s (checkpoint evicted) | 30 tokens, 0.5 s |

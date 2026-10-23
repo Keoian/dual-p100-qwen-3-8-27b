@@ -17,6 +17,7 @@ void ggml_cuda_op_mul_mat_vec_q(
     const char * src1_ddq_i, float * dst_dd_i, const int64_t row_low, const int64_t row_high, const int64_t src1_ncols,
     const int64_t src1_padded_row_size, cudaStream_t stream);
 
-// Pascal: 9..GGML_CUDA_MMVQ_CHUNK_MAX (default 40) columns of q6_K/q5_K weights as fp16 mat-vec column chunks
+// Pascal: 9..GGML_CUDA_MMVQ_CHUNK_MAX (default 28) columns of q6_K/q5_K weights as fp16 mat-vec column chunks
+// (at 9..16 columns mmvq-f16.cu's single-launch kernels go first when their shape check accepts the matmul)
 bool ggml_cuda_mmvq_chunked_ok(int cc, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst);
 bool ggml_cuda_mul_mat_vec_q_chunked(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);

@@ -1,7 +1,8 @@
 # Handoff
 
-Where the work stands, and what's worth doing next. For the gates, see `tools/gate.sh` and the "Rules" of the
-tyler-port section below (the operator's mission brief lives outside the repo, `/work/CLAUDE.md` on the build box).
+Where the work stands, and what's worth doing next. For the gates, see `tools/gate.sh` and the "Gates" and "Operator
+rules" items of the tyler-port section below (the operator's mission brief lives outside the repo, `/work/CLAUDE.md`
+on the build box).
 For the results and changes, see `p100-docs/`; to bring the production setup up elsewhere, `p100-docs/deploy/`.
 
 ## Branch `p100-optimizations-keoian` (state 2026-10-23; default branch since 10-22, production on the reference box)
@@ -80,9 +81,9 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   `fattn_gemm_softmax`** (`03da0202b`, NaN/nondeterminism with f16/q8_0 KV on long prompts; likely also the old
   "virtual devices NaN" gap). Upstreaming brief for Kmic: bench `PR_fattn_gemm_softmax_race.md`.
 - Gates: PPL 2.6074 at every commit (band 2.6209 +/- 0.0199), full op suite for kernel commits.
-- **Operator rules (Tyler) until he lifts them:** no JEV with `GGML_CUDA_P2P=1`; P2P retests only while he watches;
-  a P2P confirmation run (GGML_CUDA_P2P=1, small depth, while he watches) is
-  saved for later. He approved 262k with JEV after the 10-07 deep test passed, and chose q8_0 for the served decision
+- **Operator rules, until lifted:** no JEV with `GGML_CUDA_P2P=1`; P2P retests only while the operator watches;
+  a P2P confirmation run (GGML_CUDA_P2P=1, small depth, while the operator watches) is
+  saved for later. The operator approved 262k with JEV after the 10-07 deep test passed, and chose q8_0 for the served decision
   cache (the server's built-in default stays q4_0).
 - **Power:** one host hard reset (no log) during a 262k deep prefill with both cards at 180 W; not reproducible at
   <= 64k; the same 262k run passed at `nvidia-smi -i 0,1 -pl 150`. The limit resets on reboot: set it at startup.
@@ -93,8 +94,7 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   (CHANGES §16). Off switch on the build box: `JEV=0` for the start script.
 - **Next steps:** (1) re-run the System 2 determinism/latency harnesses with JEV loaded (greedy reference, MTP restore,
   RAM cache, Ember TTFT; not run since Phase 3); (2) full `test_set_30k` eval with the served
-  decision-cache type: DONE 10-07, matches published; (3) open the PR to Kmic for `03da0202b` (not opened; run the brief's perplexity repro
-  first, it is unverified); (4) temperatures: checked on the full set, ECE 0.0012 vs 0.0011, no refit needed; (5) Ember routing thresholds; (6) state-prefix reuse across
+  decision-cache type: DONE 10-07, matches published; (3) open the PR to Kmic for `03da0202b`: DONE, merged as Kmic's PR #4 (CHANGES §20); (4) temperatures: checked on the full set, ECE 0.0012 vs 0.0011, no refit needed; (5) Ember routing thresholds; (6) state-prefix reuse across
   decisions (latency); (7) round-1
   leftovers: slot autosave (ask first), fold tile for ~129-383-token batches.
 

@@ -10,7 +10,10 @@ It tracks upstream by merging. The last merge was upstream `f46bc30cb`
 
 ## Results
 
-| | upstream at the fork point | this fork |
+Kmic's numbers, on his board with P2P (175 W). Branch `p100-optimizations-keoian`'s own numbers, on a board without
+P2P at 150 W, are in the root [README](../README.md) ("Measured").
+
+| | upstream at the fork point | Kmic's `p100-optimizations` |
 |---|---|---|
 | decode, `tg256` (no MTP) | 17.51 t/s | **33.2 t/s** |
 | decode with MTP, 2k context | — | **54 t/s** |
@@ -23,9 +26,10 @@ It tracks upstream by merging. The last merge was upstream `f46bc30cb`
 
 **Branch `p100-optimizations-keoian`** (default branch of the fork Keoian/dual-p100-qwen-3-8-27b since 2026-10-22;
 it contains the earlier `tyler-port` work) adds work for boards whose cards can't reach each other (no P2P, e.g.
-one slot behind the chipset), for short chat turns on a long cached prefix (~0.56 s per 10-40-token turn at 26k
-context, from ~1.6-2.0 s), and for exact slot save/restore with MTP on (numbers at 180 W; that board now runs its
-cards at 150 W, tg256 30.2 after the Kmic merge, CHANGES §17). Phase 3 adds
+one slot behind the chipset), for short chat turns on a long cached prefix (server prompt time per short turn at 26k
+~1.6-2.0 s -> ~0.56 s on 10-06; now ~0.5 s to the first token on a 25k cached conversation), and for exact slot
+save/restore with MTP on. Its current numbers (150 W, production build and settings: plain decode 30.7 t/s, MTP
+chat replies ~43-45 t/s) are in the root README's "Measured". Phase 3 adds
 [JEV-27B](https://huggingface.co/autotrust/JEV-27B) System 1 decisions on the same loaded model (`POST /v1/decide`, a
 separate context with its LoRA; off in its production setup since §18), and fixes a meta-backend use-after-free and
 the softmax race (Caveats below). Later: a q8_0 K / q4_0 V cache at the full 262k with 1440p images and the Q8_0
