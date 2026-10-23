@@ -5,10 +5,12 @@
     git clone -b p100-optimizations https://github.com/Kmic-68/llama.cpp
     cd llama.cpp
 
-For the `tyler-port` branch (boards without P2P, JEV System 1, the fixes of CHANGES §15-16) clone
-`-b tyler-port https://github.com/Keoian/dual-p100-qwen-3-8-27b` instead; [deploy/](deploy/README.md) has its
-container, build script (`build-exp`, Ninja, ccache), pinned downloads and start script. `tools/gate.sh` expects
-`build-opt`: `ln -sfn build-exp build-opt`. The JEV LoRA converter needs `pip install numpy safetensors`.
+For the `p100-optimizations-keoian` branch (the default branch of Keoian/dual-p100-qwen-3-8-27b since 2026-10-22,
+which contains `tyler-port`: boards without P2P, a q8_0 K cache, 1440p images, JEV System 1, CHANGES §15-20) clone
+`-b p100-optimizations-keoian https://github.com/Keoian/dual-p100-qwen-3-8-27b` instead; [deploy/](deploy/README.md)
+has its container, build script (Ninja, ccache; production builds `build-vision`), pinned downloads and start
+scripts. `tools/gate.sh` expects `build-opt`: `ln -sfn build-vision build-opt`. The JEV LoRA converter needs
+`pip install numpy safetensors`.
 
 The release bundle also carries the fork as one diff against the upstream commit it last merged:
 `diffs/all-code.diff`, with the base SHA in `diffs/UPSTREAM-BASE-SHA.txt`. To apply it to a

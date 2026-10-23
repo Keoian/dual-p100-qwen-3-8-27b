@@ -35,11 +35,12 @@ every prompt token an output.
 
 The server exposes the same thing as `POST /v1/decide` (alias `/decide`): `--jev-lora`, `--jev-head` (required with
 `--jev-lora`), `--jev-calib`, and for the decision context `--jev-ctx` (8192), `--jev-batch` (512), `--jev-ctk/--jev-ctv`
-(q4_0 built-in default; the tyler-port production setup uses q8_0). Request and response: QUICKSTART "JEV System 1".
+(q4_0 built-in default; `start-qwen.sh`'s JEV setup uses q8_0, as served in production until JEV was turned off for
+the 1440p setup). Request and response: QUICKSTART "JEV System 1".
 
 ## Accuracy on 2x P100
 
-**Full `test_set_30k`, all 29,955 rows** (2026-10-07), through the production server's `/v1/decide`: UD-Q6_K backbone,
+**Full `test_set_30k`, all 29,955 rows** (2026-10-07), through the then-production server's `/v1/decide`: UD-Q6_K backbone,
 f16 LoRA, q8_0 decision cache, 262k System 2 and vision loaded; published = bf16 (autotrust `reports/eval_27b_bundle.md`):
 
 | metric | ours | published |
@@ -70,7 +71,7 @@ Earlier (10-06), stratified 3,000-row subset of `test_set_30k` (1,000 per kind),
 | openjev_v2 / choice (n=111) | 0.173 | 0.146 | 0.928 | 0.885 |
 
 Reweighted to the full set's composition: KL ~0.0195 vs 0.0185. ECE 0.0031 on 3,000 rows: ECE shrinks ~1/sqrt(n),
-and the full set indeed gives 0.0012. The 3k numbers are with an f16 decision cache. q8_0 (served in production) is KL 2.9e-6 vs f16 with no flips on 300
+and the full set indeed gives 0.0012. The 3k numbers are with an f16 decision cache. q8_0 (served while JEV was in production) is KL 2.9e-6 vs f16 with no flips on 300
 rows; q4_0 (the server's built-in default) is KL 3.5e-4, 6 argmax flips, all near-ties (top-2 gap <= ~0.03). Pass the
 served `-ctk/-ctv` to this tool to evaluate what the server runs. f16/q8_0 need `03da0202b`: before it, prompts above ~5.9k tokens could give NaN under
 `-sm tensor` (a race in the GEMM-attention softmax).

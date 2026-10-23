@@ -276,8 +276,9 @@ CHANGES §16 lists the commits.
     matvec route takes that matmul first, so nothing computes the GLU.
   - It hits short chat turns and slot-restore suffixes, but no op test: `test-backend-ops` builds no graph with that
     fusion, and only a whole model run trips it.
-  - The fix (the predicate asks the dispatch's own shape check) went to the base as a PR. This branch never
-    aborted: llama-bench pp9-16 runs clean.
+  - The fix (the predicate asks the dispatch's own shape check) went to the base as a PR (Kmic's #5). Production's
+    configuration never aborted (llama-bench pp9-16 runs clean); since `400aac811` (10-22, CHANGES §20) this branch
+    has the fix too.
 - **Re-measure every PR claim on the base, ABBA, and label the rest.** Several numbers measured on this branch didn't
   hold on the base tip:
   - A "3 of 4 distinct" restore result was 1 of 4 there.

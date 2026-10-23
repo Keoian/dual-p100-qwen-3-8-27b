@@ -1,6 +1,11 @@
 # PR brief: missing `__syncthreads()` in `fattn_gemm_softmax` (pre-Volta cuBLAS-GEMM attention)
 
-Hand this file to a fresh Claude Code instance (status 2026-10-07: PR not opened yet). It contains everything needed to open the PR: where the code lives,
+**Status 2026-10-23: done.** Opened from branch `fix/fattn-gemm-softmax-race` and merged into Kmic-68/llama.cpp
+`p100-optimizations` as **PR #4**; the merge of Kmic's `d90ec36a3` brought it back here with identical lines (CHANGES
+§18). The rest of this file is the brief as written before the PR (status 2026-10-07: not opened yet), kept as the
+record.
+
+Hand this file to a fresh Claude Code instance. It contains everything needed to open the PR: where the code lives,
 the bug, the one-line fix, the exact patch, the evidence, and the PR text.
 
 ## 0. Where the PR goes (read first)
@@ -219,5 +224,6 @@ Notes:
 ## 8. Reference
 
 - Fixed in: `Keoian/dual-p100-qwen-3-8-27b` `tyler-port` @ `03da0202b` (2026-10-06).
+- Merged upstream: Kmic-68/llama.cpp PR #4 (branch `fix/fattn-gemm-softmax-race`), in his `p100-optimizations`.
 - Raw logs and repro inputs are on the reference build box only (`/work/bench/LOG.md` 10-06 entries, `/work/jev/runs/`,
   `/work/jev/data/long_rep.jsonl`); the numbers above are the summary. Repo write-up: CHANGES.md §16, FINDINGS.md.

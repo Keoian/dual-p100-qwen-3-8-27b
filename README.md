@@ -2,8 +2,8 @@
 
 A fork of [Kmic-68's `p100-optimizations`](https://github.com/Kmic-68/llama.cpp/tree/p100-optimizations) (llama.cpp
 tuned for Pascal, sm_60). It's tuned further for a **consumer board without P2P** and for a **chat assistant's
-workload**: a long fixed system prompt, then short turns. The working branch is **`p100-optimizations-keoian`**,
-and it serves the numbers below in production.
+workload**: a long fixed system prompt, then short turns. The working branch is **`p100-optimizations-keoian`**
+(the fork's default branch since 2026-10-22), and it serves the numbers below in production.
 
 ## What it runs
 
@@ -34,7 +34,8 @@ and it serves the numbers below in production.
 
 ## What it adds over Kmic's branch
 
-Measured on Kmic's tip vs. his tip with each change (same box). Items marked *PR* are offered back to him.
+Measured on Kmic's tip vs. his tip with each change (same box). Items marked *PR* are open pull requests to his
+branch (#5-#16, listed in [CHANGES.md §20](p100-docs/CHANGES.md)); the softmax-race fix went in earlier as his #4.
 
 **Boards without P2P:** the tensor-parallel exchange is staged through pinned host memory and overlapped with the
 matmul. Prefill +14-20%, decode +2%; nothing changes on P2P boards. *PR*
@@ -65,13 +66,14 @@ cache running out of memory. Decode +9%, +21% at 64k; the q4_0 default is unchan
 1.5 with MTP 40.0 -> 44.7 t/s, identical output. *PR*
 
 **Fixes:**
-- a GGML_ASSERT on 9-16-token prompts in Kmic's current tip (*PR*; this branch doesn't trigger it);
+- a GGML_ASSERT on 9-16-token prompts in Kmic's current tip (*PR*; production's configuration never tripped it, and
+  this branch has the fix too since `400aac811`);
 - a use-after-free in the tensor-split backend (*PR*);
 - LoRA adapters under `-sm tensor` (*PR*).
 
 **Also:**
 - JEV-27B "System 1" decisions on `POST /v1/decide` (off in production);
-- `llama-vision-bench`;
+- `llama-vision-bench` (*PR*, with the `-b 2048` docs);
 - a deploy kit (Dockerfile, checksummed model downloads, start scripts, Unraid startup scripts).
 
 ## Run it
@@ -86,7 +88,7 @@ cache running out of memory. Decode +9%, +21% at 64k; the q4_0 default is unchan
 Clients use `http://<host>:8090/v1`.
 
 **Why each setting:** [p100-docs/QUICKSTART.md](p100-docs/QUICKSTART.md).
-**Every change with its numbers:** [p100-docs/CHANGES.md](p100-docs/CHANGES.md), sections 15-19.
+**Every change with its numbers:** [p100-docs/CHANGES.md](p100-docs/CHANGES.md), sections 15-20.
 **What was learned:** [p100-docs/FINDINGS.md](p100-docs/FINDINGS.md).
 
 Built with Claude Code (AI-assisted). Every commit carries a `Co-Authored-By` trailer, and every number above was

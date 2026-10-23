@@ -81,8 +81,8 @@ creative writing. Cards that have been under sustained load read ~5-10% lower.
 ## VRAM
 
 Figures are **per card**, at a full 262k context, with nothing else on the GPU. Without `-mmdev`, GPU0 is the
-tighter card because the vision projector loads onto it; the tyler-port scripts use `-mmdev CUDA1`, which makes
-GPU1 the tight one (the vision branch's setup leaves GPU1 ~280 MiB at full depth with a 1440p image, below).
+tighter card because the vision projector loads onto it; the deploy scripts use `-mmdev CUDA1`, which makes
+GPU1 the tight one (the production setup leaves GPU1 ~280 MiB at full depth with a 1440p image, below).
 
 | configuration | GPU0 free at full context |
 |---|---|
@@ -94,33 +94,36 @@ also drives a display or runs other programs, subtract what they use. Lowering `
 fix, and it costs only prefill speed: 2048 → 1024 → 512. With vision, `-mmdev CUDA1` puts the
 projector on the second card instead and frees ~850 MiB on GPU0.
 
-## Boards without P2P, chat apps, and slot save/restore (tyler-port branch)
+## Boards without P2P, chat apps, and slot save/restore (branch `p100-optimizations-keoian`)
 
 **No P2P.** If `nvidia-smi topo -m` shows the cards behind different root ports (e.g. one slot wired to the chipset at
 x4), `cudaDeviceCanAccessPeer` is likely 0 and `GGML_CUDA_P2P=1` does nothing; leave it out. Keep `-sm tensor` (still
 faster than `-sm layer`); this branch stages the exchanges through pinned host memory. Measured on such a board
 (cards at 180 W; at the 150 W limit that board now needs, tg256 is 26.8, and 30.2 with MTP chat decode ~40 t/s after the §17 merge): tg256 27.8, pp2048 466, MTP decode in chat 38-40 t/s, a 10-40-token chat turn on a 26k cached prefix in ~0.56 s of
 server prompt time, 256k context with vision without running out of memory. Add `-ctxcp 4`: the server recycles 4
-checkpoint buffers, and each checkpoint copy is ~150 MiB.
+checkpoint buffers, and each checkpoint copy is ~150 MiB (production keeps 32, with 48 GB of host RAM: "1440p images"
+below).
 
 **Chat apps and vision.** For OpenAI-compatible clients add:
 
       --alias qwen3.8-27b --reasoning off --image-max-tokens 1024 --api-key-file /path/to/keys
 
 `--reasoning off` because many apps hide `reasoning_content`, show nothing while the model thinks, and time out; a
-request can still turn it on with `"chat_template_kwargs": {"enable_thinking": true}`. Qwen3.8's template puts its effort
-line at the top of the system prompt, so on a plain server that toggle reprocesses the whole cached chat; with
+request can still turn it on with `"chat_template_kwargs": {"enable_thinking": true}`. Qwen3.8's template puts its
+effort line at the top of the system prompt, so on a plain server that toggle reprocesses the whole cached chat; with
 `LLAMA_THINK_BY_BUDGET=1` it costs only the new turn, and `LLAMA_SAMPLING_BY_MODE=1` gives each mode the model card's
-sampling (CHANGES §19). With thinking off the card says 0.7 / 0.8 and presence_penalty 1.5. Any
-repetition penalty used to cost 7-10% decode here, because the sampler scanned the whole vocabulary per token; since
-0d920143d it is free. Presence penalty only sees the last 64 tokens, so it guards against in-reply loops, not
-agentic ones. `--image-max-tokens 1024`
-because a 2875x1500 image is ~4100 tokens and ~19 s before the first byte; capped, ~4 s. The cap is a pixel budget: every
-image is resized to fit it with its aspect ratio kept, so 10 MP images (4380x2285 and a 2592x3888 portrait, tested
-10-07 on the JEV + vision production setup) also came out at ~1,020 tokens, ~5 s, with no extra projector memory. The projector
-(`mmproj-F16.gguf` from the model's GGUF repo) takes ~885 MiB on its card (~1.1 GiB with encoder buffers): on GPU0 by
-default (without JEV, at 256k with an image GPU0 peaked at 15.5 of 16.4 GB), on GPU1 with `-mmdev CUDA1` in the JEV
-production setup below.
+sampling (CHANGES §19). With thinking off the card says 0.7 / 0.8 and presence_penalty 1.5, which production serves.
+Any repetition penalty used to cost 7-10% decode here, because the sampler scanned the whole vocabulary per token;
+since 0d920143d it is free. Presence penalty only sees the last 64 tokens, so it guards against in-reply loops, not
+agentic ones. `--image-max-tokens 1024` (`start-qwen.sh`'s default) because a 2875x1500 image is ~4100 tokens and
+~19 s before the first byte; capped, ~4 s. Production caps at 3600 tokens instead (2560x1440's pixel area), so small
+text in screenshots stays legible, with the setup in "1440p images" below. The cap is a pixel budget: every image is
+resized to fit it with its aspect ratio kept, so 10 MP images (4380x2285 and a 2592x3888 portrait, tested 10-07 at the
+1024 cap on the JEV + vision setup then in production) also came out at ~1,020 tokens, ~5 s, with no extra projector
+memory. Production uses the ggml-org Q8_0 projector on GPU1 ("1440p images" below). The F16 projector
+(`mmproj-F16.gguf` from the model's GGUF repo, `start-qwen.sh`'s default) takes ~885 MiB on its card (~1.1 GiB with
+encoder buffers): on GPU0 by default (without JEV, at 256k with an image GPU0 peaked at 15.5 of 16.4 GB), on GPU1 with
+`-mmdev CUDA1` in the JEV setup below.
 
 **Slot save/restore** (`--slot-save-path DIR`, then `POST /slots/0?action=save|restore {"filename": ...}`) writes
 `<name>` plus `<name>.draft` (MTP head cache), `<name>.spec` (MTP carry-over row) and `<name>.ckpt` (context
@@ -130,14 +133,14 @@ few tokens. Slot files are client-driven: nothing is saved or restored automatic
 The in-memory prompt cache (`--cache-ram`, 8 GiB by default) switches between recent prompts automatically while the
 server runs, also exactly.
 
-## JEV System 1 decisions (`/v1/decide`, tyler-port branch)
+## JEV System 1 decisions (`/v1/decide`; off in production since the 1440p setup)
 
 Calibrated one-pass decisions from [autotrust/JEV-27B](https://huggingface.co/autotrust/JEV-27B) on the same loaded
 model. Download only `adapter/`, `head.safetensors`, `calibration.json`, `config.json` (not the bf16 shards), convert
 the LoRA once (`pip install numpy safetensors`), then add the JEV flags to the server command. JEV was validated only
 **without** `GGML_CUDA_P2P` (on a no-P2P board, at a 150 W power limit); drop `GGML_CUDA_P2P=1` from the command above
-when adding it. The full production command (JEV with a q8_0 decision cache, projector on GPU1) is in
-[deploy/README.md](deploy/README.md); `deploy/start-qwen.sh` runs it.
+when adding it. The full JEV command (q8_0 decision cache, projector on GPU1; production from 10-07 until the 1440p
+setup) is in [deploy/README.md](deploy/README.md); `deploy/start-qwen.sh` runs it with its defaults.
 
       python3 tools/jev-decide/convert_jev_lora.py --adapter JEV-27B/adapter --config JEV-27B/config.json \
           --outtype f16 --out jev-27b-lora-f16.gguf
@@ -156,20 +159,21 @@ output is unchanged by them. ~0.6-0.7 s per ~100-token decision, ~2 s per ~500 t
 decisions).
 
 - **KV type** of the decision context: `--jev-ctk/--jev-ctv`, server default q4_0 (KL 3.5e-4 vs f16). q8_0 is
-  practically f16 (KL 3e-6) for ~67 MiB more per GPU; the tyler-port production setup serves q8_0. f16/q8_0 need commit `03da0202b` (before it, long prompts could NaN).
+  practically f16 (KL 3e-6) for ~67 MiB more per GPU; the JEV production setup served q8_0 (and `start-qwen.sh`
+  still defaults to it). f16/q8_0 need commit `03da0202b` (before it, long prompts could NaN).
 - **VRAM** (262k System 2, MTP, q4_0 System 2 cache, f16 decision cache; q4_0 decision cache not re-measured, ~190 MiB
   less per GPU): JEV adds ~0.6 GiB per GPU idle. After decisions and a few chat turns GPU0 was 15.2 GB and GPU1 15.9 GB
   vs 13.8 / 14.9 GB idle without JEV (that includes System 2's own pool growth). With the projector, move it to GPU1
-  (`-mmdev CUDA1`). Served configuration (q8_0 decision cache), chat at 255k + image at 256k: peaks GPU0 15.2, GPU1
+  (`-mmdev CUDA1`). Served JEV configuration (q8_0 decision cache), chat at 255k + image at 256k: peaks GPU0 15.2, GPU1
   16.2 of 16.4 GB, all requests fine. Not run: 262k with the q4_0 decision cache.
-- **Power.** On the tyler-port board a 262k deep prefill with both cards at 180 W reset the host once; at
+- **Power.** On the reference (no-P2P) board a 262k deep prefill with both cards at 180 W reset the host once; at
   `nvidia-smi -i 0,1 -pl 150` the same run passed. The limit resets on reboot.
 - `llama-jev-decide` evaluates a JSONL file of decisions. It takes the usual model flags plus `--lora` (not
   `--jev-lora`), `-c`, `-ctk/-ctv`, and its own `--jev-head`, `--jev-calib`, `--jev-in`, `--jev-out`, `--jev-hidden`,
-  `--jev-limit`; see `tools/jev-decide/README.md`. Pass the served decision-cache type (`-ctk q8_0 -ctv q8_0` for the
-  production setup) to measure what the server runs.
+  `--jev-limit`; see `tools/jev-decide/README.md`. Pass the served decision-cache type (`-ctk q8_0 -ctv q8_0` for
+  `start-qwen.sh`'s JEV setup) to measure what the server runs.
 
-## 1440p images and a q8_0 K cache (branch `kv-q8q4-262k-vision1440-q8proj`)
+## 1440p images and a q8_0 K cache (the production setup, `start-qwen-vision.sh`)
 
 ```bash
 bash p100-docs/deploy/build.sh build-vision           # this branch; adds q4p / fold kernels for a q8_0 K cache

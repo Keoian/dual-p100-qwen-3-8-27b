@@ -71,8 +71,8 @@ is no P2P with JEV loaded until a supervised test. Env switches of the script: `
 `JEV_KV=q4_0` (smaller decision cache, ~67 MiB/GPU less, KL 3.5e-4 vs f16), `MMDEV=` (projector on the default
 device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `THINK_BY_BUDGET=0` / `SAMPLING_BY_MODE=0` / `NOTHINK_SAMPLING=<json>` (CHANGES §19), `ALIAS=`, `API_KEY_FILE=` (no key),
 `CTX=`, `BUILD=`, `MODEL=`, `JEV_DIR=`. Why each choice: [QUICKSTART.md](../QUICKSTART.md).
-`start-qwen-vision.sh` (copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision` from the
-`kv-q8q4-262k-vision1440-q8proj` branch) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->
+`start-qwen-vision.sh` (production; copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision`, as in the
+recipe above) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->
 0.00116), the Q8_0 vision projector and images up to 2560x1440's pixel area (`IMAGE_MAX_TOKENS=3600`); numbers in
 its header. New start-qwen.sh switches for it: `CTK=`, `CTV=` (cache types), `UB=` (micro-batch), `CTXCP=` (context
 checkpoints, default 4; the vision script uses 32) and `CACHE_RAM=` (RAM prompt cache in MiB; vision script 24576,
@@ -93,8 +93,9 @@ uses 2048 so a dropped long prompt frees the server in ~2 s).
 - 2x Tesla P100-PCIE-16GB, NVIDIA driver with CUDA 12 support; CUDA **12.x** toolkit (13 cannot target sm_60).
 - **GPU power limit 150 W** (`nvidia-smi -pm 1; nvidia-smi -i 0,1 -pl 150`). On the reference board a 262k prefill
   with both cards at 180 W hard-reset the host once; at 150 W the full-depth test passed. Costs ~3.5% decode.
-- Nothing else on the GPUs: the model needs both cards (peaks at 262k with JEV + an image: GPU0 15.2, GPU1 16.2 of
-  16.4 GB, ~115 MiB allocatable left on GPU1).
+- Nothing else on the GPUs: the model needs both cards (production peaks with a 1440p image at 259k: GPU0 15,185,
+  GPU1 16,099 of 16,384 MiB; with JEV + an image at 262k: GPU0 15.2, GPU1 16.2 of 16.4 GB, ~115 MiB allocatable left
+  on GPU1).
 - THP: no setting needed (the server no longer advises huge pages on checkpoint buffers; tested with
   `enabled=always`, `defrag=madvise`).
 - Check P2P on a new board with `nvidia-smi topo -m`; cards behind different root ports usually have none. With
@@ -102,15 +103,16 @@ uses 2048 so a dropped long prompt frees the server in ~2 s).
 
 ## Acceptance checks
 
-| check | expected on the reference board (150 W) |
+| check | expected on the reference board (150 W), `start-qwen.sh` with its defaults (JEV, build-exp) |
 |---|---|
 | `verify.sh` | health ok; decide ~0.9 s; chat ~2-3 s; idle VRAM ~14.3 / 15.4 GB |
 | `MODEL=/work/models/Qwen3.8-27B-UD-Q6_K.gguf ./tools/gate.sh` (with `ln -sfn build-exp build-opt`; server stopped) | PPL 2.6074 (band 2.6209 +/- 0.0199), tg256 ~30.2, FLASH_ATTN_EXT 3/3 |
 | an image question | ~5-6 s for any size up to 10 MP (resized to ~1,020 tokens) |
 | full depth (optional, ~25 min) | chat filled to ~255k with decisions + an image at 256k: no errors, GPU1 peak ~16.15 GB |
 
-With `start-qwen-vision.sh` (build-vision): idle VRAM ~14.6 / 15.4 GB; Kmic's gate PPL 2.6064 with `-ctk q8_0`;
-a 1440p screenshot ~15 s at shallow depth; full depth (optional, ~45 min) chat filled to ~255k + a 1440p image at
-~259k: prompt ~32 s, decode ~28 t/s, GPU1 peak ~16.1 GB. No `/v1/decide` (JEV off), so skip that part of `verify.sh`.
+With `start-qwen-vision.sh` (production, build-vision; for the gate `ln -sfn build-vision build-opt`): idle VRAM
+~14.6 / 15.4 GB; Kmic's gate PPL 2.6064 with `-ctk q8_0`; a 1440p screenshot ~15 s at shallow depth; full depth
+(optional, ~45 min) chat filled to ~255k + a 1440p image at ~259k: prompt ~32 s, decode ~28 t/s, GPU1 peak ~16.1 GB.
+No `/v1/decide` (JEV off): `verify.sh` skips its decision check.
 
-Records of how these numbers were measured: [CHANGES.md §15-16, §18](../CHANGES.md), [FINDINGS.md](../FINDINGS.md).
+Records of how these numbers were measured: [CHANGES.md §15-16, §18-20](../CHANGES.md), [FINDINGS.md](../FINDINGS.md).

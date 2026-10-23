@@ -4,22 +4,43 @@ Where the work stands, and what's worth doing next. For the gates, see `tools/ga
 tyler-port section below (the operator's mission brief lives outside the repo, `/work/CLAUDE.md` on the build box).
 For the results and changes, see `p100-docs/`; to bring the production setup up elsewhere, `p100-docs/deploy/`.
 
-## Branch `p100-optimizations-keoian` (state 2026-10-22; production on the reference box)
+## Branch `p100-optimizations-keoian` (state 2026-10-23; default branch since 10-22, production on the reference box)
 
-- Branch contents:
-  - kv-q8q4-262k-vision1440-q8proj
-  - a merge of the base `p100-optimizations` d90ec36a3
-  - a background pre-fault of a spare context checkpoint
-  - `-b 2048` in the deploy script
-- Production on :8090 is `p100-docs/deploy/start-qwen-vision.sh` from `build-vision`.
-- Contributions back to the base: 11 PR branches `p100/<type>-<name>`, each cut from d90ec36a3 and validated there
-  (identical logits for every code PR, gate PPL 2.6074, full op suite with all but the first merged). One is a crash
-  fix for the base tip (FINDINGS, "Validating PRs").
-- In progress: the server renders Qwen3.8's template in thinking mode always. "Thinking off" becomes an appended empty
-  `<think>` close, so toggling never invalidates the prompt cache, and sampling follows the effective mode (FINDINGS,
-  same section).
+- Branch contents (CHANGES §18-20):
+  - all of the base `p100-optimizations` up to its tip d90ec36a3 (2026-10-17, unchanged since), merged;
+  - `tyler-port` and `kv-q8q4-262k-vision1440-q8proj`, both ancestors of this branch now (historical names; work
+    happens here);
+  - a background pre-fault of a spare context checkpoint, `-b 2048` in the deploy script;
+  - thinking off as the template's own generation prompt and sampling by thinking mode (aa942a7d3), the penalty
+    sampler visiting only the window's tokens (0d920143d), the card's presence_penalty 1.5 with thinking off;
+  - three commits brought over from the PRs: the GGML_ASSERT fix (400aac811), 42 MUL_MAT tests (d30893442), `-b 2048`
+    in QUICKSTART (504afc465);
+  - the README rewrite (0d682248f) and a deploy recipe that brings up this setup (a6cf418f6).
+- Production on :8090 is `p100-docs/deploy/start-qwen-vision.sh` (which runs `start-qwen.sh`) from `build-vision`:
+  - `-c 262144 -sm tensor`, KV q8_0 K / q4_0 V, `-ub 1024 -b 2048 -np 1`;
+  - MTP drafts n-max 4, p-min 0.2, `LLAMA_SPEC_SAMPLE_TEMP=1.0`, `LLAMA_SPEC_DRAFT_TOPK=20`;
+  - `-ctxcp 32 --cache-ram 24576` (48 GB host; on 32 GB `CTXCP=4 CACHE_RAM=8192`);
+  - Q8_0 projector on GPU1, `IMAGE_MAX_TOKENS=3600`, `GGML_CUDA_FA_VEC_MAX_Q=16`, `GGML_CUDA_FA_GEMM_MINQ=17`;
+  - `--reasoning off` with `LLAMA_THINK_BY_BUDGET=1` and `LLAMA_SAMPLING_BY_MODE=1`: thinking off 0.7 / 0.8 / 20 / 0
+    with presence_penalty 1.5 (the card's), thinking 1.0 / 0.95 / 20 / 0 / 0; CLI sampling (for `/completion`)
+    0.7 / 0.8 / 20 / 0;
+  - JEV off, API key file, alias `qwen3.8-27b`, `--slot-save-path`, 150 W cap, no `GGML_CUDA_P2P`.
+  - Numbers: README "Measured" (production build and settings, 2026-10-22).
+- Contributions back to the base: 12 PRs to Kmic-68/llama.cpp `p100-optimizations`, **#5-#16, open as of 10-23**
+  (table in CHANGES §20). Each is a branch `p100/<type>-<name>` cut from d90ec36a3 and validated there (identical
+  logits for every code PR, gate PPL 2.6074, full op suite with all but the first merged; FINDINGS "Validating PRs").
+  Earlier: #4 (the softmax barrier, 03da0202b) was merged; Kmic's #3 (KaneQuah's fold prefill for q8_0/f16) was merged
+  and superseded our own q8_0-K fold prefill.
+- What's left:
+  - The production binary is from 0d920143d-era code and doesn't include 400aac811 yet (its configuration doesn't need
+    it); the next rebuild picks it up.
+  - A guard for `LLAMA_THINK_BY_BUDGET` on Apertus, whose on/off reply starts are identical (the splice would leave
+    thinking on): offered, not written. Production (Qwen3.8 only) is unaffected.
+  - When Kmic merges or changes the PRs: merge his tip (never rebase) and repeat the checks of the 10-21 merge
+    (CHANGES §18: op suite, PPL for both cache types, logits against the previous build, ABBA speed).
+  - Older open items: CHANGES "Known gaps", and the parked slot-autosave design below (ask first).
 
-## Branch `kv-q8q4-262k-vision1440-q8proj` (state 2026-10-18; production on the reference box)
+## Branch `kv-q8q4-262k-vision1440-q8proj` (state 2026-10-18; production then, now part of `p100-optimizations-keoian`)
 
 - Seven commits on tyler-port `67a7a1472` (CHANGES §18, FINDINGS "q8_0 K cache, 1440p images", QUICKSTART "1440p
   images"). Production on :8090 is `p100-docs/deploy/start-qwen-vision.sh` from `build-vision`: 262k, KV q8_0 K /

@@ -386,7 +386,8 @@ the generic GEMM-attention branch calls it (pre-Volta, nkv >= 4096, >= 128 query
 q4_0 caches go to the fold kernels, which have barriers between every `red` write and read. Present since `738022bda`;
 `cb6024e6b` (out-of-place S/P) chased the same symptoms and made them rarer. System 2 A/B (fixed vs pre-fix library,
 150 W): pp2048@8k 408.96/406.82 vs 407.63/406.64, tg256@8k 26.36/26.37 vs 26.33/26.35. Upstreaming brief (target
-Kmic-68/llama.cpp `p100-optimizations`): bench `PR_fattn_gemm_softmax_race.md`.
+Kmic-68/llama.cpp `p100-optimizations`): bench `PR_fattn_gemm_softmax_race.md`, in the repo as
+[`upstream/PR-fattn-gemm-softmax-race.md`](upstream/PR-fattn-gemm-softmax-race.md); merged as Kmic's PR #4 (§18).
 
 **System-1 KV type.** Accuracy against an f16 decision cache on 300 test rows: q8_0 KL 2.9e-6, 0 argmax flips; q4_0
 KL 3.5e-4, 6 flips (all near-ties, top-2 gap <= ~0.03). Since `03da0202b` f16 and q8_0 are NaN-free; the default
@@ -396,8 +397,8 @@ stays q4_0 (smallest), q8_0 is the accuracy option (+~67 MiB per GPU at 8k), cho
 JEV with a **q8_0** decision cache, P2P off, 150 W: a chat filled to 255,168 tokens with a decision after each of 9
 parts (1.6-2.8 s each), a 6,796-token decision (p 0.991, 20.7 s; NaN with f16 before `03da0202b`), an image at 256,221
 (10.2 s, decode 30.2 t/s) and a recall question: all passed. Peaks GPU0 15,217 / GPU1 16,153 of 16,384 MiB, 324 W,
-46 C, PCIe replays and AER 0. This is now the tyler-port production default (JEV q8_0 + vision on GPU1); putting the
-projector on GPU0 instead would mirror the VRAM split, not improve it.
+46 C, PCIe replays and AER 0. This became the tyler-port production default (JEV q8_0 + vision on GPU1; replaced by
+the §18 setup); putting the projector on GPU0 instead would mirror the VRAM split, not improve it.
 
 **Latency and calibration.** A decision costs ~0.6 s at ~100 tokens and ~2 s at ~500 (1.7-3.0 s for 456-778 tokens with
 System 2 at 28k-226k depth): each decision re-encodes its state. 
@@ -630,7 +631,7 @@ The GGUF and the base QUICKSTART carry only the thinking set, which had been ser
 | sampling | decode median | MTP acceptance |
 |---|---|---|
 | 0.7 / 0.8 / presence 1.5 (card) | 37.2 t/s | 0.449 |
-| 0.7 / 0.8 / presence 0 (deployed) | 46.9 t/s | 0.537 |
+| 0.7 / 0.8 / presence 0 (deployed then) | 46.9 t/s | 0.537 |
 | 1.0 / 0.95 / presence 0 (before) | 44.9 t/s | 0.507 |
 
 Most of that cost turned out to be the penalty sampler itself, fixed below. Note that presence penalty sees only the
@@ -659,6 +660,54 @@ last 64 tokens, so it doesn't address agentic loops (repeated tool calls turns a
 - "low" didn't think reliably less than xhigh, and medium (no line at all) thought longest.
 - Not kept: drafting at each request's temperature (acceptance 0.474 vs 0.477).
 
+## 20. Brought over from the PRs to Kmic, the README, and the default branch (2026-10-22/23)
+
+The PRs to Kmic's `p100-optimizations` are open as his #5-#16 (table below). Each is a branch `p100/<type>-<name>`
+cut from his tip `d90ec36a3` (2026-10-17, still his tip on 10-23) and validated there (FINDINGS "Validating PRs").
+Three commits made for them weren't on this branch yet; they came over on 10-22:
+
+| commit | change | checks |
+|---|---|---|
+| `400aac811` | cuda: the fold SwiGLU fusion isn't planned when the 9..16-column fp16 matvec takes the matmul (from #5) | pp9/12/16 run in Kmic's configuration (q4_0/q4_0 `-ub 2048`: 99.7 / 110.6 / 110.9 t/s) and in production's; logits identical to Kmic's tip (max KLD 0.000004); gate PPL 2.6074; full test-backend-ops 16,784/16,785 |
+| `d30893442` | tests: 42 `MUL_MAT` cases for 17-64-column q6_K/q5_K batches, the chunked matvec and the narrow fold tiles (from #9) | test only |
+| `504afc465` | docs: `-b 2048` in QUICKSTART's server command and flag table (from #15) | docs only |
+
+**`400aac811`.** In Kmic's tip, 9-16-token prompts under `-sm tensor` abort with
+`GGML_ASSERT(!ggml_cuda_gemm_fold_glu_pending())` (FINDINGS "Validating PRs"). The production configuration never
+tripped it (llama-bench pp9-16 ran clean); now this branch has the fix too. The one op-suite failure was a `TOPK_MOE`
+case on CUDA1, once (ERR 1.6e-5 > 1e-7), a MoE-only op: `TOPK_MOE` then passed 416/416 five times on this build and
+five times on the previous one, so it is intermittent and unrelated.
+
+**Docs and deploy (10-22).**
+- `0d682248f`: the root README leads with this fork: specs, numbers measured on the production build and settings
+  (2026-10-22), and what it adds over Kmic's branch. Kmic's summary follows, attributed, then upstream's README.
+- `a6cf418f6`: the deploy recipe brings up the current production setup (this branch, `start-qwen-vision.sh`, a 48 GB
+  host) instead of tyler-port's JEV setup; `verify.sh` skips the `/v1/decide` check when JEV is off.
+
+**Default branch.** Since 2026-10-22 the fork's default branch is `p100-optimizations-keoian`, which production runs.
+`tyler-port` (`67a7a1472`) and `kv-q8q4-262k-vision1440-q8proj` are contained in it: historical names, no longer
+worked on.
+
+**PRs to Kmic** (all open on 2026-10-23; numbers on Kmic's tip vs. his tip with the change, same box):
+
+| PR | what | headline number |
+|---|---|---|
+| #5 | fix: the GGML_ASSERT above (fold GLU fusion vs the 9..16-column fp16 matvec route), a bug in his tip | 9-16-token prompts: GGML_ASSERT -> runs |
+| #6 | fix: ggml-meta use-after-free when graph shapes change (§16) | (§16: SIGSEGV / NaN -> fixed) |
+| #7 | fix: MTP drafts correct after any resume, exact slot save/restore (§15) | restore after generation 9,715 -> 4 tokens |
+| #8 | perf: chat-turn checkpoints (§15, §18) | prompt time per short turn 1.3-1.5 s -> 0.70 s |
+| #9 | perf: 17-64-token prefill (§15), +42 MUL_MAT tests | pp17 39 -> 93, pp32 70 -> 110, pp64 126 -> 158 t/s |
+| #10 | perf: vision encoder on GEMM attention (§18) | 1440p 7.47 -> 5.74 s, 4K 9.41 -> 7.15 s |
+| #11 | perf: q8_0 K decode kernel and routing switches (§18) | tg32 27.3 -> 29.8, at 64k 21.3 -> 25.9; q4_0 unchanged |
+| #12 | perf: tensor-parallel exchange without P2P (§15) | pp512 340 -> 406, pp2048 382 -> 437, tg256 30.0 -> 30.6 |
+| #13 | perf: conv state chain in one launch (§15) | tg +0.5%, bit-identical |
+| #14 | fix: LoRA under `-sm tensor` (§16) | GGML_ASSERT -> runs |
+| #15 | docs: `-b 2048` in QUICKSTART, and `llama-vision-bench` (§18) | an abandoned 64k prompt frees the server 33.1 -> 2.2 s |
+| #16 | perf: repetition penalties visit only the window's tokens (§19) | presence 1.5 + MTP 40.0 -> 44.7 t/s, identical output |
+
+Earlier: Kmic's PR #4, the softmax barrier (`03da0202b`, §16), was merged and is in his tip. His PR #3 (KaneQuah's
+q8_0/f16 fold prefill) was merged too and superseded our q8_0-K fold prefill (`19d593f8e`, §18).
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,
@@ -668,7 +717,7 @@ last 64 tokens, so it doesn't address agentic loops (repeated tool calls turns a
   Probably the `fattn_gemm_softmax` race fixed in `03da0202b` (§16: same path, same symptoms);
   not re-run with virtual devices.
 - **Prefill at depth is power-bound.** The fold GEMM and attention kernels hold the cards at their
-  175 W cap (§14; the tyler-port board now runs at 150 W, §16, so its absolute numbers are lower). Faster code in the same instructions doesn't help; less energy per flop would.
+  175 W cap (§14; the no-P2P board of §15-20 runs at 150 W, §16, so its absolute numbers are lower). Faster code in the same instructions doesn't help; less energy per flop would.
 - **Attention at depth is compute-bound, not bandwidth-bound.** q4p (§10, §11) runs the 5-token
   verify at 262144 in 2.68 ms per call with fp16 products; the cache read alone would take ~0.35.
   It is at 255 registers and one block per SM, so what is left is latency, not arithmetic. Time
@@ -676,19 +725,23 @@ last 64 tokens, so it doesn't address agentic loops (repeated tool calls turns a
   server's power cap holds 1189 (OPTLOG 190). The q8_0-K variant (§18) fits that picture: +44% K/V
   bytes cost +43% time at 262144 keys while reading at ~230 GB/s, a third of what the card sustains,
   so the cost is per load issued, not DRAM bandwidth.
-- **q8_0 K cache (§18).** Fast kernels cover only q4_0 V: q8_0/q5_x (4.6x lower KLD again) would need V support
-  in q4p and fold, and 0.4 GiB more per card than fits beside a 1440p image at 262k. GPU1 has ~280 MiB left at
-  full depth with an image; `-ub 2048` does not fit there. An image's prompt time is now mostly the language
+- **q8_0 K cache (§18).** The fast decode kernel (q4p) covers only q4_0 V; fold prefill also reads q8_0 V since
+  Kmic's PR #3 (§18). q8_0/q5_x V (4.6x lower KLD again) would need V support in q4p (and q5_x in fold), and 0.4 GiB
+  more per card than fits beside a 1440p image at 262k. GPU1 has ~280 MiB left at full depth with an image;
+  `-ub 2048` does not fit there. An image's prompt time is now mostly the language
   model's prefill of its 3,600 tokens (~9.5 s), not the encoder (5.8 s); the encoder's PV GEMM wastes ~44% of
   its 128-row tiles at head size 72.
-- **No P2P boards (tyler-port).** Each turn still runs a separate ~75 ms decode of the prompt's last 4 tokens only to
+- **No P2P boards (§15).** Each turn still runs a separate ~75 ms decode of the prompt's last 4 tokens only to
   place the end-of-prompt checkpoint; the obvious fix (read it from the MTP rollback snapshot) breaks replay identity.
   Batches of ~129-383 tokens still pay for 128-column fold tiles (cuBLAS ALGO6 is 14% faster at 300, less accurate).
-- **JEV System 1 (tyler-port §16).** 17-256 options (the vLLM lm_head-LoRA form) not implemented, images in the
+- **JEV System 1 (§16; off in production since §18).** 17-256 options (the vLLM lm_head-LoRA form) not implemented, images in the
   decision state not supported, (the full 30k evaluation matches the published metrics, see above), deciding on System 2's cache without the adapter on the state tested and rejected (FINDINGS), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens, ~2 s at
-  ~500). Full depth with JEV + image passed with the q8_0 decision cache (served default); q4_0 at 262k not run.
+  ~500). Full depth with JEV + image passed with the q8_0 decision cache (the type served while JEV was in
+  production); q4_0 at 262k not run.
 - **Slot state does not survive a restart by itself.** Disk slot files are client-driven (`/slots/0?action=save|restore`);
   the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (root HANDOFF.md, "parked design").
+- **`LLAMA_THINK_BY_BUDGET` on Apertus (§19).** Its thinking-on and thinking-off reply starts are identical, so the
+  splice would leave thinking on. A guard was offered, not written; Qwen3.8 (production) is unaffected.
 - **Prefill attention accumulation.** With a q4_0 cache the fold path (`GGML_CUDA_FA_FOLD`,
   default on, OPTLOG 225) accumulates QK^T in fp16 chains of 128 summed in fp32, and PV in fp16
   over 128 keys, fp32 across them. `GGML_CUDA_FA_FOLD=0` returns to the cuBLAS path (fp16 over the

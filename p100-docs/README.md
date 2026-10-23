@@ -21,14 +21,19 @@ It tracks upstream by merging. The last merge was upstream `f46bc30cb`
 
 [QUICKSTART.md](QUICKSTART.md) has the full table from 2k to 260k and the exact server command.
 
-**Branch `tyler-port`** adds work for boards whose cards can't reach each other (no P2P, e.g. one slot behind the
-chipset), for short chat turns on a long cached prefix (~0.56 s per 10-40-token turn at 26k context, from ~1.6-2.0 s),
-and for exact slot save/restore with MTP on (numbers at 180 W; that board now runs its cards at 150 W, tg256 30.2 after the Kmic merge, CHANGES §17).
-Phase 3 adds [JEV-27B](https://huggingface.co/autotrust/JEV-27B) System 1 decisions on the same loaded model
-(`POST /v1/decide`, a separate context with its LoRA), and fixes a meta-backend use-after-free and the softmax race
-above. [CHANGES.md §15-16](CHANGES.md) has the commits and numbers, [FINDINGS.md](FINDINGS.md) what worked and what
-didn't, [QUICKSTART.md](QUICKSTART.md) the serving notes, and [deploy/](deploy/README.md) the recipe to bring the whole
-production setup up on another machine.
+**Branch `p100-optimizations-keoian`** (default branch of the fork Keoian/dual-p100-qwen-3-8-27b since 2026-10-22;
+it contains the earlier `tyler-port` work) adds work for boards whose cards can't reach each other (no P2P, e.g.
+one slot behind the chipset), for short chat turns on a long cached prefix (~0.56 s per 10-40-token turn at 26k
+context, from ~1.6-2.0 s), and for exact slot save/restore with MTP on (numbers at 180 W; that board now runs its
+cards at 150 W, tg256 30.2 after the Kmic merge, CHANGES §17). Phase 3 adds
+[JEV-27B](https://huggingface.co/autotrust/JEV-27B) System 1 decisions on the same loaded model (`POST /v1/decide`, a
+separate context with its LoRA; off in its production setup since §18), and fixes a meta-backend use-after-free and
+the softmax race (Caveats below). Later: a q8_0 K / q4_0 V cache at the full 262k with 1440p images and the Q8_0
+projector (§18), thinking toggles that keep the prompt cache and free repetition penalties (§19). The root
+[README](../README.md) leads with its production numbers. [CHANGES.md §15-20](CHANGES.md) has the commits and
+numbers and the PRs to Kmic-68's `p100-optimizations` (#5-#16), [FINDINGS.md](FINDINGS.md) what worked and what
+didn't, [QUICKSTART.md](QUICKSTART.md) the serving notes, and [deploy/](deploy/README.md) the recipe to bring the
+whole production setup up on another machine.
 
 The speed didn't cost accuracy. The P100 multiplies in fp16 at twice its fp32 rate, and this fork
 uses that everywhere the work is compute-bound (prefill matmuls, the MTP verify matvec, decode and
@@ -45,7 +50,7 @@ Perplexity 2.6101, all-fp32 2.6095; at this size perplexity can't separate them,
 | [CHANGES.md](CHANGES.md) | every code change, grouped by subsystem, with what it measured |
 | [FINDINGS.md](FINDINGS.md) | what worked, what failed, what transfers to other Pascal cards, and the measurement traps |
 | [BUILD.md](BUILD.md) | building from source and verifying a build |
-| [deploy/](deploy/README.md) | tyler-port: container, build, pinned downloads, start script, power limit, acceptance checks |
+| [deploy/](deploy/README.md) | `p100-optimizations-keoian`'s production setup: container, build, pinned downloads, start scripts, power limit, acceptance checks |
 | [THREE-GPU.md](THREE-GPU.md) | measurements on three P100s from a contributor: NCCL, graphs, cancel latency |
 | [`../OPTLOG.md`](../OPTLOG.md) | the full record: every attempt, kept or reverted, with numbers |
 
