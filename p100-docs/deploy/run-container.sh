@@ -21,6 +21,8 @@ nvidia-smi -pm 1
 nvidia-smi -i 0,1 -pl 150
 
 docker rm -f "$NAME" 2>/dev/null || true
+# --init: a minimal init as PID 1 reaps exited processes; without it every llama-server killed for a restart stays a
+# zombie (harmless, but `pgrep -x llama-server` keeps matching them)
 docker run -d --name "$NAME" \
   --runtime=nvidia \
   -e NVIDIA_VISIBLE_DEVICES=all \
@@ -28,6 +30,7 @@ docker run -d --name "$NAME" \
   -v "$WORK":/work \
   -p 8090:8090 \
   --shm-size=2g \
+  --init \
   --restart unless-stopped \
   "$IMAGE"
 

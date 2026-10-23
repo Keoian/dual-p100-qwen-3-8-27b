@@ -12,7 +12,8 @@
 # vision suite 0.935 (BF16 projector 0.938); Ember 10 turns at 25k: TTFT median 474 ms, decode 36.5 t/s; fill to 255k
 # 358 -> 144 t/s (q4_0/q4_0 at -ub 2048: 386 -> 144); 1440p screenshot at 258,866 tokens: prompt 31.5 s, decode 27.8 t/s,
 # small text 96-100%, peaks GPU0 15,187 / GPU1 16,101 MiB. Image caps: 4096 tokens fits at 262k, 6000 does not.
-# Needs build-vision from the vision-1440p branch (q4p/fold q8_0-K kernels) and fetch.sh's Q8_0 projector.
+# The production setup. Needs build-vision from this branch (p100-optimizations-keoian: q4p q8_0-K kernel, fold q8_0)
+# and fetch.sh's Q8_0 projector.
 # Usage: bash start-qwen-vision.sh [extra llama-server args]; any of the env switches below can be overridden, the rest
 # as in start-qwen.sh (which must sit in the same directory).
 export JEV=${JEV:-0} IMAGE_MAX_TOKENS=${IMAGE_MAX_TOKENS-3600} CTK=${CTK:-q8_0} CTV=${CTV:-q4_0} UB=${UB:-1024}

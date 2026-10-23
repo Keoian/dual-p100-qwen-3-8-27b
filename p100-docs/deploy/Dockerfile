@@ -1,4 +1,4 @@
-# Container for serving (and building) the tyler-port branch on 2x Tesla P100.
+# Container for serving (and building) the p100-optimizations-keoian branch on 2x Tesla P100.
 # CUDA 12.x ONLY: CUDA 13 cannot target sm_60.
 ARG CUDA_VERSION=12.4.1
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04

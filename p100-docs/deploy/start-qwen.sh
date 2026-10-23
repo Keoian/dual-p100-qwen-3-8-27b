@@ -1,8 +1,9 @@
 #!/bin/bash
-# Qwen3.8-27B Q6_K on both P100s for Ember: llama-server on :8090 (tyler-port build).
+# Qwen3.8-27B Q6_K on both P100s for Ember: llama-server on :8090. Its defaults are the earlier JEV setup (build-exp,
+# q4_0/q4_0, F16 projector); production runs it through start-qwen-vision.sh, which overrides them.
 # Board notes (p100-docs/CHANGES.md §15): GPU1 sits on a PCH x4 link and the cards have no P2P, so
 # GGML_CUDA_P2P is not set (it would enable nothing); tensor-parallel exchanges are staged through
-# pinned host memory by the tyler-port AllReduce. -sm tensor still beats -sm layer here (same build: decode 26.6 vs 18.2).
+# pinned host memory by this branch's AllReduce. -sm tensor still beats -sm layer here (same build: decode 26.6 vs 18.2).
 # Usage: bash start-qwen.sh [extra llama-server args]. Expects the layout of p100-docs/deploy/README.md (/work/...).
 set -e
 BUILD=${BUILD:-/work/src/llama.cpp/build-exp}
@@ -24,10 +25,13 @@ REASONING=${REASONING:-off}
 THINK_BY_BUDGET=${THINK_BY_BUDGET:-1}
 # SAMPLING_BY_MODE=1: the model card's sampling per thinking mode, for fields a request leaves out: thinking 1.0/0.95/20/0;
 # thinking off 0.7/0.8/20/0 with the card's presence_penalty 1.5 (against endless repetition; it sees the last 64 tokens).
-# It cost ~10-20% decode until 0d920143d made the penalty sampler free (44.7 vs 44.2 t/s at 0).
+# It cost 7-10% decode until 0d920143d made the penalty sampler free (with MTP 44.7 vs 44.2 t/s at 0).
+# THINK_SAMPLING / NOTHINK_SAMPLING: JSON objects of sampling fields for each mode; the chat endpoints use them in
+# place of the CLI --temp/--top-p/--top-k/--min-p below, which then only serve /completion.
 # The CLI sampling below serves /completion, which has no thinking mode
 SAMPLING_BY_MODE=${SAMPLING_BY_MODE:-1}
 NOTHINK_SAMPLING=${NOTHINK_SAMPLING:-'{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}'}
+THINK_SAMPLING=${THINK_SAMPLING:-'{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}'}
 # model id clients see in /v1/models (instead of the file path)
 ALIAS=${ALIAS:-qwen3.8-27b}
 # API keys, one per line (Authorization: Bearer <key>); API_KEY_FILE= (empty) serves without a key
@@ -37,7 +41,7 @@ AUTH=(); [ -n "$API_KEY_FILE" ] && [ -f "$API_KEY_FILE" ] && AUTH=(--api-key-fil
 # projector on GPU1 -> peaks GPU0 15,217 / GPU1 16,153 MiB; on GPU0 would mirror that); GPU1 is the tested placement. MMDEV= = default device
 MMDEV=${MMDEV-CUDA1}
 [ ${#VISION[@]} -gt 0 ] && [ -n "$MMDEV" ] && VISION+=(-mmdev "$MMDEV")
-# System-2 KV cache types (CTK/CTV). Pascal fast kernels exist for q4_0/q4_0 and (kv-q8q4 branch) q8_0 K / q4_0 V;
+# System-2 KV cache types (CTK/CTV). Pascal fast kernels exist for q4_0/q4_0 and q8_0 K / q4_0 V;
 # other types fall back to generic kernels and need GGML_CUDA_FA_VEC_MAX_Q / GGML_CUDA_FA_GEMM_MINQ (QUICKSTART). UB = -ub
 CTK=${CTK:-q4_0}
 CTV=${CTV:-q4_0}
@@ -61,7 +65,7 @@ mkdir -p /work/slots
 export LD_LIBRARY_PATH="$BUILD/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # CUDA graphs for the single-token MTP draft steps only; sampled drafts verified with the speculative-sampling rule
 export GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20
-export LLAMA_THINK_BY_BUDGET="$THINK_BY_BUDGET" LLAMA_SAMPLING_BY_MODE="$SAMPLING_BY_MODE" LLAMA_SAMPLING_NOTHINK="$NOTHINK_SAMPLING"
+export LLAMA_THINK_BY_BUDGET="$THINK_BY_BUDGET" LLAMA_SAMPLING_BY_MODE="$SAMPLING_BY_MODE" LLAMA_SAMPLING_NOTHINK="$NOTHINK_SAMPLING" LLAMA_SAMPLING_THINK="$THINK_SAMPLING"
 exec "$BUILD/bin/llama-server" -m "$MODEL" \
   -ngl 99 -sm tensor -fa 1 -ctk "$CTK" -ctv "$CTV" \
   -c "$CTX" -b "$NBATCH" -ub "${UB:-2048}" -np 1 -ctxcp "$CTXCP" "${CACHE[@]}" \

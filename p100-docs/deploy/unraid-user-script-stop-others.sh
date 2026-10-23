@@ -1,11 +1,13 @@
 #!/bin/bash
 # OPTIONAL Unraid User Script, "At Startup of Array": like unraid-user-script.sh, but first stops other containers that
-# use the GPUs (default: llm-dev), waits until the GPUs are free, then starts the Qwen server (JEV + vision) detached.
+# use the GPUs (default: llm-dev), waits until the GPUs are free, then starts the Qwen server detached: the production
+# setup, start-qwen-vision.sh (QWEN_SCRIPT=/work/start-qwen.sh for the JEV setup).
 # Use this one instead of unraid-user-script.sh when another GPU container may autostart; keep that container's own
 # autostart scripts disabled so the two don't race.
 STOP_CONTAINERS=${STOP_CONTAINERS:-llm-dev}   # space-separated
 QWEN_CONTAINER=${QWEN_CONTAINER:-qwen-dev}
-LOG=${LOG:-/work/bench/serve-8090.log}        # path inside the container
+LOG=${LOG:-/work/serve-8090.log}              # path inside the container
+QWEN_SCRIPT=${QWEN_SCRIPT:-/work/start-qwen-vision.sh}
 
 nvidia-smi -pm 1
 nvidia-smi -i 0,1 -pl 150        # both reset on every boot; 180 W reset the host once under load (CHANGES §16)
@@ -36,8 +38,8 @@ fi
 docker start "$QWEN_CONTAINER" >/dev/null 2>&1
 sleep 5
 
-# Start detached so this script returns (start-qwen.sh execs llama-server in the foreground)
-docker exec -d "$QWEN_CONTAINER" bash -lc "setsid nohup bash /work/start-qwen.sh > $LOG 2>&1"
+# Start detached so this script returns (the start script execs llama-server in the foreground)
+docker exec -d "$QWEN_CONTAINER" bash -lc "setsid nohup bash $QWEN_SCRIPT > $LOG 2>&1"
 
 # Report when it's up (~1 min to load)
 for i in $(seq 1 60); do
