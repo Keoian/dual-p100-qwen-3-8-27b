@@ -3,7 +3,7 @@
 # W = N+1 that is fixed for the server process (padded verify). Expected committed tokens E = 1 + sum_{j<=k} prod_{i<=j} a_i,
 # expected time T from the cost model, throughput = tokens / time aggregated as ratio of sums (BASELINES' committed t/s).
 import json, os, numpy as np
-from load import CACHE, DMAX
+from load import COST, DMAX
 
 _P = None
 
@@ -11,7 +11,7 @@ _P = None
 def params():
     global _P
     if _P is None:
-        _P = json.load(open(os.path.join(CACHE, "cost.json")))
+        _P = json.load(open(COST))
     return _P
 
 

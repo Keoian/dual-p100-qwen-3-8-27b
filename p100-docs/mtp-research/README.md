@@ -9,7 +9,7 @@ confidence-gated re-anchoring give?
 
 | head or idea | verdict | evidence |
 |---|---|---|
-| Fidelity: when to stop drafting | **built, measured: +4.7%** (held-out prompts +8.0%) | two isotonic lookup tables replace the p-min test (`LLAMA_SPEC_STOP_ISO=0.125`, commit `8d0d6b6dd`); exact output distribution |
+| Fidelity: when to stop drafting | **built, measured: +4.7%** (held-out prompts +8.0%; long context +4.8%; thinking, own tables, +2.9%) | two isotonic lookup tables replace the p-min test (`LLAMA_SPEC_STOP_ISO=0.125`, commit `8d0d6b6dd`); exact output distribution; in production since 10-24 ([GROUNDING.md](GROUNDING.md)) |
 | Task Type | **not worth building** | true category labels add +0.0% on top of the Fidelity rule; the draft's own confidence already tracks task switches inside a reply |
 | Difficulty | **not worth building** | the previous cycle predicts the next (Spearman -0.22), but adds +0.1% once the current draft distribution is known |
 | a trained Fidelity model (gradient boosting) | marginal | +0.3% over the lookup tables in simulation |
@@ -63,14 +63,16 @@ The measured rule recovers about a quarter of that.
 
 - `LLAMA_SPEC_STOP_ISO=0.125` on the server enables the rule; unset, behaviour is unchanged.
 - The tables were fit on thinking-off sampling (0.7/0.8/20/0, presence 1.5) with sampled drafts at T 1.0, the
-  production setup. Other sampling regimes (thinking 1.0/0.95, greedy drafts) weren't measured.
+  production setup. At the thinking sampling (1.0/0.95) they stop too early and gain nothing, so the rule is gated
+  by the request's target temperature (`LLAMA_SPEC_STOP_ISO_TEMP`, commit `30ad85064`), and thinking requests get
+  their own tables on the default branch ([GROUNDING.md](GROUNDING.md)).
 - `LLAMA_SPEC_TRACE=<path>` collects traces for refitting. `scripts/run_suite.py` runs the suite, and
   `analysis/run_all.sh` rebuilds every analysis table (CPU, ~2.5 min).
 
 ## Limits
 
-- Small suite: 72 prompts, one seed, up to 300 tokens, contexts up to ~8.5k tokens. Long contexts (64k+) and
-  thinking mode weren't covered.
+- Small suite: 72 prompts, one seed, up to 300 tokens, contexts up to ~8.5k tokens. Long contexts (32k-200k) and
+  thinking mode were measured afterwards ([GROUNDING.md](GROUNDING.md)).
 - The held-out +8.0% rests on 24 prompts; the all-prompt +4.7% is the safer number.
 - Lenient acceptance has a simulated speed/divergence frontier only. Real quality needs generation and task scoring.
 
@@ -83,7 +85,8 @@ The measured rule recovers about a quarter of that.
 | [BASELINES.md](BASELINES.md) | Phase 1 fixed-policy sweep |
 | [TRACE_SCHEMA.md](TRACE_SCHEMA.md) | trace format |
 | [ANALYSIS.md](ANALYSIS.md) | offline analysis: depth curve, cost model, policies, heads, lenient acceptance, task type |
-| `analysis/` | the analysis scripts |
-| `scripts/` | the suite runner and the test-window scripts (they stop and restore the box's production server) |
+| [GROUNDING.md](GROUNDING.md) | the rule with thinking on and at long context, the temperature gate, the thinking tables (windows 9-12) |
+| `analysis/` | the analysis scripts (`run_all.sh`; `run_think.sh` for the thinking-on traces) |
+| `scripts/` | the suite runner, the long-context runner, the test-window scripts (they stop and restore the box's production server), their summaries, and `prod-patch.py` (the rule without trace hooks for the default branch) |
 | `suite/prompts.json` | the 72-prompt suite with categories and splits |
-| `slots/` | the long-context slot library's tooling: saved 16k-250k contexts that restore in 2-20 s |
+| `slots/` | the long-context slot library's tooling: saved 16k-250k contexts that restore in 2-20 s, and the long-context questions |

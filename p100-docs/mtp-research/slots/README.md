@@ -1,9 +1,5 @@
 # Long-context slot library (built 2026-10-24)
 
-In this folder: the tooling and the manifest. On the reference box only, not in git: the slot files
-(/work/slots/longctx-*), the frozen corpus (/work/bench/slots/corpus.txt) and the messages-<depth>.json
-conversations (they contain the documents). `build_corpus.py` regenerates the corpus from the repo at 9acfc08e2.
-
 Prefilled long contexts, saved as llama-server slot files. A test restores one in 2-20 s instead of prefilling it
 (16k: 43 s ... 250k: ~20 min from scratch).
 
@@ -40,11 +36,10 @@ msgs = longctx.messages("128k") + [{"role": "user", "content": "your question"}]
 
 `python3 longctx.py list` prints the table; `python3 longctx.py restore 128k [keyfile]` restores one slot.
 
-- **Restore before each request if every request must start exactly at the document's end.** After a request, the
-  slot holds the document plus that question and answer. For the next question it must roll back to the document's
-  end, and a hybrid model can only roll back to a context checkpoint. Whether one sits close to the document's end
-  (from the build's `.ckpt`, or made during the request) decides how much is reprocessed, and this wasn't measured.
-  Restoring guarantees a clean start and is cheap.
+- **Follow-up questions don't need a restore** (measured 10-24, window 10). After a request, the slot holds the
+  document plus that question and answer; the next question rolls back to the document's end through a context
+  checkpoint and processes only itself (37-43 tokens, 0.6-1.0 s at 32k-200k), and its reply is identical to the one
+  from a freshly restored slot. Restore once per depth (or after a request with a different document prefix).
 - **Thinking on or off doesn't change the prefix.** `LLAMA_THINK_BY_BUDGET=1` always renders the template in thinking
   mode, so both reuse the slot.
 

@@ -9,7 +9,7 @@
 # tool-call markup seen, last emitted token ends a line.
 # Oracle: category one-hot.
 import json, numpy as np
-from load import load, detok, CATS, DMAX, R
+from load import load, detok, rows_file, CATS, DMAX
 
 DRAFT = ["q", "p1", "p2", "margin", "p5", "H", "istop", "logq", "logp1", "depth", "cum_logp1", "cum_logq", "min_p1_prev", "meanH"]
 # EXACT-SAFE set for the decision "add drafted token d?": only the step-d DISTRIBUTION (top-K p's, H) plus the earlier
@@ -25,8 +25,7 @@ CAT = [f"cat_{c}" for c in CATS]
 
 
 def first_token_texts(run, c, emitted):
-    fn = "I-on.jsonl" if run == "I" else f"T-{run}.jsonl"
-    T = {json.loads(l)["task"]: json.loads(l) for l in open(f"{R}/runs/{fn}")}
+    T = {json.loads(l)["task"]: json.loads(l) for l in open(rows_file(run))}
     out = {}
     for task, t in T.items():
         idx = np.where(c["task"] == task)[0]

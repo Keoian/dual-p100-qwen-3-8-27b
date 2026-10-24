@@ -6,11 +6,10 @@
 #   verify(W=9, ctx)        = V9 + k9*ctx                 fit on n8p0 (W=9 > 8: n_active is not honoured, full width)
 #   verify(W in 2,3,4,7)    calibrated from the B3 end-to-end runs (no trace at those widths); W=6,8 interpolated
 #   other(W) = pad+catch-up+accept+gap, linear in W (n4p0, n8p0)
-# Writes cache/cost.json and prints the calibration tables.
-import json, os, numpy as np
-from load import load, CACHE, CATS
-
-RUNS = "/work/bench/mtp3/runs/"
+# Writes cache/cost.json and prints the calibration tables. Think set (MTP3_THINK_REFIT_COST=1 only): cache/think/cost.json,
+# fit on tn4p0/tn8p0 plus the chat identity run I (the only trace with n_act < W) and the chat B3 runs.
+import json, os, sys, numpy as np
+from load import load, CATS, RUNS, COST, REFIT_COST
 
 
 def fit():
@@ -71,7 +70,7 @@ def cycle_cost(p, steps, W, n_act, ctx):
 
 
 def b_runs(lab, cats_excl=("longctx",), splits=("dev", "val")):
-    rows = [json.loads(l) for l in open(RUNS + lab + ".jsonl")]
+    rows = [json.loads(l) for l in open(f"{RUNS}/{lab}.jsonl")]
     rows = [x for x in rows if x["category"] not in cats_excl and x["split"] in splits]
     n = sum(x["predicted_n"] for x in rows); ms = sum(x["predicted_ms"] for x in rows)
     dn = sum(x["draft_n"] for x in rows); da = sum(x["draft_acc"] for x in rows)
@@ -109,6 +108,8 @@ def calibrate(p, pstop):
 
 
 if __name__ == "__main__":
+    if not REFIT_COST:
+        sys.exit("cost.py: the think set reads the chat set's cost.json; set MTP3_THINK_REFIT_COST=1 to refit")
     import sim
     p = fit()
     # p-min stop fractions at n-max n, p-min 0.2, from the n8p0 states (dev+val, no longctx)
@@ -119,7 +120,7 @@ if __name__ == "__main__":
         k, steps = sim.rule_pmin(c, n, 0.2)
         pstop[n] = float((steps - k)[m].mean())
     p = calibrate(p, pstop)
-    json.dump(p, open(os.path.join(CACHE, "cost.json"), "w"), indent=1)
+    json.dump(p, open(COST, "w"), indent=1)
     print("## cost model parameters (us)")
     for k in ["d0", "d1", "dctx", "V5", "s", "k5", "V9", "k9", "o5", "o9", "t_req"]:
         print(f"  {k:6s} {p[k]:9.1f}")

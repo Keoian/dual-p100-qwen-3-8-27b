@@ -8,18 +8,39 @@
 import json, os, sys, numpy as np
 
 R = "/work/bench/mtp3"
-CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
+RUNS = os.environ.get("MTP3_RUNS_DIR", f"{R}/runs")  # trace + harness files (override for dry runs)
+CACHE0 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")  # chat set's cache; vocab.json for both sets
+# Trace set, chosen by MTP3_TRACESET: unset or "chat" = thinking-off traces n4p0/n8p0 + identity run I, cache/, out/;
+# "think" = thinking-on traces tn4p0/tn8p0, no identity run, cache/think/, out/think/ (run_think.sh). The code keeps
+# the chat names: "n4p0"/"n8p0" mean the n-max 4 / n-max 8 trace of the selected set (FILE maps them to the files).
+# The cost model is timing, not sampling: the think set reads the chat set's cost.json unless MTP3_THINK_REFIT_COST=1.
+TRACESET = os.environ.get("MTP3_TRACESET") or "chat"
+assert TRACESET in ("chat", "think"), TRACESET
+CACHE = CACHE0 if TRACESET == "chat" else os.path.join(CACHE0, "think")
+FILE = {"n4p0": "tn4p0", "n8p0": "tn8p0"} if TRACESET == "think" else {}
+TRACE_RUNS = ["n4p0", "n8p0"] + (["I"] if TRACESET == "chat" else [])
+REFIT_COST = TRACESET == "chat" or os.environ.get("MTP3_THINK_REFIT_COST") == "1"
+COST = os.path.join(CACHE if REFIT_COST else CACHE0, "cost.json")
 DMAX = 8
 CATS = ["casual", "code", "creative", "json", "longctx", "reasoning", "switch", "tools"]
 SPLITS = ["dev", "val", "test"]
 
 
+def trace_file(run):
+    return f"{RUNS}/trace-{FILE.get(run, run)}.jsonl"
+
+
+def rows_file(run):
+    """run_suite rows of a trace run (the identity run's are I-on.jsonl)."""
+    return f"{RUNS}/" + ("I-on.jsonl" if run == "I" else f"T-{FILE.get(run, run)}.jsonl")
+
+
 def _parse(run):
-    T = [json.loads(l) for l in open(f"{R}/runs/" + ("I-on.jsonl" if run == "I" else f"T-{run}.jsonl"))]
+    T = [json.loads(l) for l in open(rows_file(run))]
     tmap = {t["task"]: t for t in T}
     prompts = json.load(open(f"{R}/suite/prompts.json"))
     pid_of = {p["id"]: i for i, p in enumerate(prompts)}
-    recs = [json.loads(l) for l in open(f"{R}/runs/trace-{run}.jsonl")]
+    recs = [json.loads(l) for l in open(trace_file(run))]
     recs = [r for r in recs if r["task"] in tmap]  # task 0 = server warm-up request
     recs.sort(key=lambda r: (r["task"], r["t_us"]))
     n = len(recs)
@@ -86,11 +107,13 @@ def _parse(run):
 
 
 def load(run):
-    """run in {'n4p0','n8p0','I'}; returns (cycles dict of arrays, emitted list, request dict)."""
-    os.makedirs(CACHE, exist_ok=True)
-    p = os.path.join(CACHE, f"{run}.npz")
-    pe = os.path.join(CACHE, f"{run}.emitted.json")
-    src = f"{R}/runs/trace-{run}.jsonl"
+    """run in {'n4p0','n8p0','I'}; returns (cycles dict of arrays, emitted list, request dict).
+    The identity run I exists only in the chat set (the think set's cost refit borrows it), so it is cached in CACHE0."""
+    cache = CACHE0 if run == "I" else CACHE
+    os.makedirs(cache, exist_ok=True)
+    p = os.path.join(cache, f"{FILE.get(run, run)}.npz")
+    pe = os.path.join(cache, f"{FILE.get(run, run)}.emitted.json")
+    src = trace_file(run)
     if os.path.exists(p) and os.path.getmtime(p) > os.path.getmtime(src):
         z = np.load(p)
         cyc = {k[2:]: z[k] for k in z.files if k.startswith("c_")}
@@ -114,7 +137,7 @@ def detok(ids):
     """GPT-2 byte-level BPE detokenizer over cache/vocab.json (built by vocab.py)."""
     global _vocab, _bdec
     if _vocab is None:
-        _vocab = json.load(open(os.path.join(CACHE, "vocab.json")))
+        _vocab = json.load(open(os.path.join(CACHE0, "vocab.json")))
         bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
         cs = bs[:]
         m = 0
@@ -137,6 +160,6 @@ def detok(ids):
 
 
 if __name__ == "__main__":
-    for run in sys.argv[1:] or ["n4p0", "n8p0", "I"]:
+    for run in sys.argv[1:] or TRACE_RUNS:
         c, e, r = load(run)
-        print(run, len(c["task"]), "cycles", len(r["task"]), "requests")
+        print(FILE.get(run, run), len(c["task"]), "cycles", len(r["task"]), "requests")

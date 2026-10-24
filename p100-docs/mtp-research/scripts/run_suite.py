@@ -1,7 +1,9 @@
 # run_suite.py LABEL: run the workload suite against the server on :8090 (temp key), one JSONL row per request.
 # env: SPLITS (default dev,val), SEEDS (default 11), MAXTOK (default 400), SAMPLING (nothink | kmic | greedy),
 #      CATS (comma list, default all), KEYFILE (default /work/qwen-api-keys.work), THINK (off | on; sent as
-#      chat_template_kwargs.enable_thinking so servers without --reasoning off match production's default)
+#      chat_template_kwargs.enable_thinking so servers without --reasoning off match production's default),
+#      REASONING_EFFORT (unset: none sent; low | medium: production's LLAMA_THINK_BY_BUDGET turns it into a 512/2048-token
+#      thinking budget, i.e. a reasoning-budget sampler and the per-token verify rule; no effort = block verify)
 # Natural-length replies (no ignore_eos: it is a logit bias and changes the sampler path). Prints per-category and
 # overall committed tok/s (tokens / decode time), per-reply median, draft acceptance, prompt time.
 import json, os, sys, time, hashlib, statistics, urllib.request, collections
@@ -24,6 +26,10 @@ for seed in seeds:
     for p in suite:
         b = dict(messages=[{"role": "user", "content": p["prompt"]}], max_tokens=maxtok, seed=seed, **S,
                  chat_template_kwargs={"enable_thinking": os.environ.get("THINK", "off") == "on"})
+        if os.environ.get("CACHE_PROMPT") == "0":  # no reuse of an earlier request's prompt state (RAM cache)
+            b["cache_prompt"] = False
+        if os.environ.get("REASONING_EFFORT"):
+            b["reasoning_effort"] = os.environ["REASONING_EFFORT"]
         if "tools" in p:
             b["tools"] = p["tools"]
         t0 = time.time()
@@ -36,7 +42,7 @@ for seed in seeds:
         except Exception:
             task_id = None
         m = r["choices"][0]["message"]; t = r["timings"]
-        text = (m.get("content") or "") + json.dumps(m.get("tool_calls") or [])
+        text = (m.get("reasoning_content") or "") + "\u241e" + (m.get("content") or "") + json.dumps(m.get("tool_calls") or [])
         row = dict(label=lab, id=p["id"], category=p["category"], split=p["split"], seed=seed, wall_s=wall, task=task_id,
                    prompt_n=t.get("prompt_n"), prompt_ms=t.get("prompt_ms"), predicted_n=t.get("predicted_n"),
                    predicted_ms=t.get("predicted_ms"), draft_n=t.get("draft_n", 0), draft_acc=t.get("draft_n_accepted", 0),
