@@ -1364,6 +1364,18 @@ static const float spec_stop_iso = [] {
     const char * s = getenv("LLAMA_SPEC_STOP_ISO");
     return s ? (float) atof(s) : 0.0f;
 }();
+// LLAMA_SPEC_STOP_ISO_TEMP=<lo>,<hi> (default 0.5,0.9): the rule only for requests whose target temperature lies in
+// [lo, hi]; others keep the p-min test. The tables were fit at the thinking-off sampling (target T 0.7, top-p 0.8,
+// presence 1.5), where the rule measured +4.7%; at the thinking sampling (T 1.0, top-p 0.95) the target accepts more
+// of the draft than the tables predict, the rule stops too early and measured -0.8% / +1.9% (budget / block verify).
+static const std::pair<float, float> spec_stop_iso_temp = [] {
+    const char * s = getenv("LLAMA_SPEC_STOP_ISO_TEMP");
+    float lo = 0.5f, hi = 0.9f;
+    if (s) {
+        sscanf(s, "%f,%f", &lo, &hi);
+    }
+    return std::make_pair(lo, hi);
+}();
 static const float spec_iso_x [24] = { 0.000f, 0.020f, 0.050f, 0.100f, 0.150f, 0.200f, 0.250f, 0.300f, 0.350f, 0.400f, 0.450f, 0.500f,
                                        0.550f, 0.600f, 0.650f, 0.700f, 0.750f, 0.800f, 0.850f, 0.900f, 0.950f, 0.980f, 0.995f, 1.000f };
 static const float spec_iso_q [24] = { 0.000f, 0.115f, 0.147f, 0.231f, 0.250f, 0.267f, 0.299f, 0.299f, 0.299f, 0.321f, 0.350f, 0.389f,
@@ -1890,8 +1902,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
                 // only collect very high-confidence draft tokens
                 const float pc_next = p_cum[seq_id]*cur_p->data[0].p;
-                const bool  by_iso  = spec_stop_iso > 0.0f && s_iso[seq_id]*spec_iso_lookup(spec_iso_p1, cur_p->data[0].p) < spec_stop_iso;
-                const bool  stop    = (spec_stop_iso > 0.0f ? by_iso : cur_p->data[0].p < params.p_min) ||
+                const float t_tgt   = dparams.at(seq_id).target_temp;
+                const bool  iso_on  = spec_stop_iso > 0.0f &&
+                                      (t_tgt < 0.0f || (t_tgt >= spec_stop_iso_temp.first && t_tgt <= spec_stop_iso_temp.second));
+                const bool  by_iso  = iso_on && s_iso[seq_id]*spec_iso_lookup(spec_iso_p1, cur_p->data[0].p) < spec_stop_iso;
+                const bool  stop    = (iso_on ? by_iso : cur_p->data[0].p < params.p_min) ||
                                       pc_next < p_cum_min(dparams.at(seq_id).pos0);
 
                 auto * trace = dparams.at(seq_id).trace;
@@ -1901,7 +1916,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
                 if (stop) {
                     if (trace) {
-                        const bool by_p_min = spec_stop_iso <= 0.0f && cur_p->data[0].p < params.p_min;
+                        const bool by_p_min = !iso_on && cur_p->data[0].p < params.p_min;
                         trace->back().stop     = by_iso ? "iso" : by_p_min ? "p_min" : "p_cum";
                         trace->back().stop_thr = by_iso ? spec_stop_iso : by_p_min ? params.p_min : p_cum_min(dparams.at(seq_id).pos0);
                     }

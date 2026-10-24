@@ -3706,6 +3706,7 @@ private:
                         if (slot.spec_trace) {
                             common_speculative_get_draft_params(spec.get(), slot.id).trace = &slot.spec_trc.draft;
                         }
+                        common_speculative_get_draft_params(spec.get(), slot.id).target_temp = slot.task->params.sampling.temp;
 
                         drafting.push_back(&slot);
                     }

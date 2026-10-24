@@ -91,6 +91,10 @@ struct common_speculative_draft_params {
 
     // when set, the draft clears it and appends one entry per decoded step (nullptr: off)
     std::vector<common_speculative_trace_step> * trace = nullptr;
+
+    // the target sampler's temperature for this sequence's request (< 0: unknown). LLAMA_SPEC_STOP_ISO applies only
+    // when it lies in LLAMA_SPEC_STOP_ISO_TEMP (or is unknown)
+    float target_temp = -1.0f;
 };
 
 // whether any configured draft type reads common_speculative_draft_params::prompt when drafting (the
