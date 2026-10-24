@@ -9,7 +9,7 @@ confidence-gated re-anchoring give?
 
 | head or idea | verdict | evidence |
 |---|---|---|
-| Fidelity: when to stop drafting | **built, measured: +4.7%** (held-out prompts +8.0%; long context +4.8%; thinking, own tables, +2.9%) | two isotonic lookup tables replace the p-min test (`LLAMA_SPEC_STOP_ISO=0.125`, commit `8d0d6b6dd`); exact output distribution; in production since 10-24 ([GROUNDING.md](GROUNDING.md)) |
+| Fidelity: when to stop drafting | **built, measured: +4.7%** (held-out prompts +8.0%; long context +4.8%; thinking, own tables, +2.9%) | two isotonic lookup tables replace the p-min test (`LLAMA_SPEC_STOP_ISO=0.125`, commit `8d0d6b6dd`); exact output distribution; in production since 10-24 as the default branch's port (`c44158c77`, `504d4d353`, `f5fbd2542`; other temperatures +6.6% at T 0.3, +6.1% at T 1.2) ([GROUNDING.md](GROUNDING.md), [CF_ANALYSIS.md](CF_ANALYSIS.md)) |
 | Task Type | **not worth building** | true category labels add +0.0% on top of the Fidelity rule; the draft's own confidence already tracks task switches inside a reply |
 | Difficulty | **not worth building** | the previous cycle predicts the next (Spearman -0.22), but adds +0.1% once the current draft distribution is known |
 | a trained Fidelity model (gradient boosting) | marginal | +0.3% over the lookup tables in simulation |
@@ -64,10 +64,13 @@ The measured rule recovers about a quarter of that.
 - `LLAMA_SPEC_STOP_ISO=0.125` on the server enables the rule; unset, behaviour is unchanged.
 - The tables were fit on thinking-off sampling (0.7/0.8/20/0, presence 1.5) with sampled drafts at T 1.0, the
   production setup. At the thinking sampling (1.0/0.95) they stop too early and gain nothing, so the rule is gated
-  by the request's target temperature (`LLAMA_SPEC_STOP_ISO_TEMP`, commit `30ad85064`), and thinking requests get
-  their own tables on the default branch ([GROUNDING.md](GROUNDING.md)).
-- `LLAMA_SPEC_TRACE=<path>` collects traces for refitting. `scripts/run_suite.py` runs the suite, and
-  `analysis/run_all.sh` rebuilds every analysis table (CPU, ~2.5 min).
+  by the request's target temperature (`LLAMA_SPEC_STOP_ISO_TEMP`, commit `30ad85064`; on this branch 0.5,0.9 and no
+  thinking tables). The default branch carries the thinking tables and the chat tables at every other temperature
+  ([GROUNDING.md](GROUNDING.md), [CF_ANALYSIS.md](CF_ANALYSIS.md)); deploy from there.
+- `LLAMA_SPEC_TRACE=<path>` collects traces for refitting; `LLAMA_SPEC_TRACE_TOPK=128` adds the target's raw logits so
+  tables for any sampling setting can be recomputed offline (`analysis/run_cf.sh`). `scripts/run_suite.py` runs the
+  suite, `analysis/run_all.sh` rebuilds every analysis table (CPU, ~2.5 min), `analysis/run_think.sh` the thinking-on
+  set.
 
 ## Limits
 

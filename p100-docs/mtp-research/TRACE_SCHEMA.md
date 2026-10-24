@@ -1,6 +1,8 @@
 # LLAMA_SPEC_TRACE record schema
 
-Branch `mtp-adaptive-research`, commit `6928a6854` (2026-10-24). Built and run: same-seed output identical with the trace on and off; +2.3% decode time while on.
+Branch `mtp-adaptive-research`, commit `6928a6854` (2026-10-24); the stop rule's `"iso"` stop value from `8d0d6b6dd`, the
+counterfactual fields from `ffdc8e49d`. Built and run: same-seed output identical with the trace on and off; +2.3% decode time
+while on.
 
 Enable with `LLAMA_SPEC_TRACE=<path>` on `llama-server`. The server reads it once, when speculative decoding
 initializes, and appends to the file. Unset means off. Output is JSONL: one object per line, one line per verify
@@ -57,7 +59,7 @@ records are byte-for-byte the format above.
 ## `draft[i]`
 
 Entries `0..n_real-1` are the real drafted tokens. If drafting stopped on `p_min` or `p_cum`, there is one more
-entry at index `n_real`: the step whose decode stopped drafting. Its token was **not** added, and its `id` is the
+entry at index `n_real` (also on `iso`): the step whose decode stopped drafting. Its token was **not** added, and its `id` is the
 draft's top-1. In total there are `min(steps decoded, n_real+1)` entries.
 
 | field | type | meaning |
@@ -66,8 +68,8 @@ draft's top-1. In total there are `min(steps decoded, n_real+1)` entries.
 | `q` | float | the draft's probability of `id`. In sampled mode this is the q the token was drawn from (after `draft_temp` and `LLAMA_SPEC_DRAFT_TOPP`), the value recorded in `dp.dists`. Otherwise it is the top-1 p |
 | `top` | [[id,p],...] | the draft's top-5 candidates: top-K (`LLAMA_SPEC_DRAFT_TOPK`), p = softmax over those K at T=1. This is the distribution `p_min` and `p_cum` test. `top` is always at T=1. In sampled mode `q` belongs to `id`, which need not be `top[0]` |
 | `H` | float | entropy (nats) over the same top-K at T=1 |
-| `stop` | string, optional | present only on the step where drafting stopped. `p_min`: top-1 p < `--spec-draft-p-min`. `p_cum`: the product of top-1 p's would fall below the depth-scheduled cutoff. `n_max`: the draft reached `--spec-draft-n-max`; this entry's token was added and it is entry `n_real-1`. `cut`: the token was drafted but removed afterwards, by `--spec-draft-n-min` or by the remaining-context limit (`dp.n_max`) |
-| `thr` | float, optional | the threshold behind `stop`: p_min, the `p_cum` cutoff at this depth, or n_max. Absent for `cut` |
+| `stop` | string, optional | present only on the step where drafting stopped. `iso`: the lookup stop rule (`LLAMA_SPEC_STOP_ISO`) estimated the drafted prefix's survival below theta. `p_min`: top-1 p < `--spec-draft-p-min`. `p_cum`: the product of top-1 p's would fall below the depth-scheduled cutoff. `n_max`: the draft reached `--spec-draft-n-max`; this entry's token was added and it is entry `n_real-1`. `cut`: the token was drafted but removed afterwards, by `--spec-draft-n-min` or by the remaining-context limit (`dp.n_max`) |
+| `thr` | float, optional | the threshold behind `stop`: theta (`iso`), p_min, the `p_cum` cutoff at this depth, or n_max. Absent for `cut` |
 
 `p_cum` itself is not written. It equals the product of `top[0][1]` over the earlier entries, multiplied by this
 entry's `top[0][1]`.
@@ -120,7 +122,8 @@ generating slots, every slot's record shows the same D/C/V/P spans.
 
 ## LLAMA_SPEC_TRACE_TOPK: counterfactual fields
 
-Added 2026-10-24 on `mtp-adaptive-research` (built, not yet run on a server). With `LLAMA_SPEC_TRACE_TOPK=K`, K > 0
+Added 2026-10-24 on `mtp-adaptive-research` (`ffdc8e49d`). Run in window 13 (K 128): `counterfactual.py selfcheck` reproduced
+the server's p of every drafted token within 5.0e-7 (thinking off, 19,949 rows) and 5.3e-7 (thinking on, 72,943 rows). With `LLAMA_SPEC_TRACE_TOPK=K`, K > 0
 (clamped to the vocabulary size), every record gets the fields below, so that `analysis/counterfactual.py` can replay
 the target's sampler chain under any `temp`/`top_k`/`top_p`/`min_p`/penalty setting and give
 p_S(x) for each drafted token x, hence the p/q acceptance probability min(1, p_S(x)/q(x)) (q does not depend on the

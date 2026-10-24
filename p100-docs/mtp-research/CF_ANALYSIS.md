@@ -71,7 +71,7 @@ Tables fit on the other trace's content at the same S, scored on this trace's te
 
 | T | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 | 1.0 | 1.1 | 1.2 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| production uses | p-min | p-min | chat | chat | chat | chat | chat | thinking | p-min | p-min |
+| production before f5fbd2542 uses | p-min | p-min | chat | chat | chat | chat | chat | thinking | p-min | p-min |
 | chat content | +5.8% | +5.5% | -0.1% | -0.1% | -0.0% | -0.0% | +0.0% | +0.4% | +4.2% | +4.1% |
 | think content | +6.6% | +5.9% | +0.1% | +0.2% | +0.3% | +0.4% | +0.4% | +0.0% | +4.0% | +4.0% |
 | pooled | +6.5% | +5.8% | -0.0% | +0.0% | +0.1% | +0.1% | +0.2% | +0.2% | +4.1% | +4.0% |
@@ -96,7 +96,7 @@ Each cell is the mean over the 48 settings at that T.
 
 | approximation | storage (B) | chat | think | pooled |
 |---|---|---|---|---|
-| a. production today (gate by T, else p-min 0.2) | 392 | -1.88 / -5.79 / -5.62 | -2.09 / -6.41 / -6.19 | -1.99 / -6.40 / -6.08 |
+| a. production before f5fbd2542 (gate by T, else p-min 0.2) | 392 | -1.88 / -5.79 / -5.62 | -2.09 / -6.41 / -6.19 | -1.99 / -6.40 / -6.08 |
 | a. production's chat set at every T | 196 | +0.08 / -0.33 / -0.14 | -0.28 / -0.86 / -0.65 | -0.10 / -0.50 / -0.35 |
 | a. production's thinking set at every T | 196 | -0.61 / -1.40 / -1.23 | -0.23 / -0.83 / -0.78 | -0.41 / -1.34 / -1.13 |
 | a. production's two sets, chat T < 0.95, thinking T >= 0.95 | 392 | -0.01 / -0.88 / -0.56 | -0.16 / -0.69 / -0.52 | -0.08 / -0.42 / -0.32 |
@@ -143,7 +143,7 @@ Each cell is the mean over the 48 settings at that T.
 
 | candidate | chat: mean [95%] / worst | think: mean [95%] / worst | pooled: mean [95%] / worst |
 |---|---|---|---|
-| R0 production today | -1.88 [-2.32, -1.37] / -5.79 | -2.09 [-2.37, -1.85] / -6.41 | -1.99 [-2.28, -1.68] / -6.40 |
+| R0 production before f5fbd2542 | -1.88 [-2.32, -1.37] / -5.79 | -2.09 [-2.37, -1.85] / -6.41 | -1.99 [-2.28, -1.68] / -6.40 |
 | **R1 production arrays; thinking set for T in [0.95, 1.05], chat set at every other T** | **+0.05 [-0.07, +0.16] / -0.88** | **-0.24 [-0.46, +0.08] / -0.86** | **-0.10 [-0.20, +0.03] / -0.50** |
 | R1b production chat set at every T | +0.08 [-0.04, +0.21] / -0.33 | -0.28 [-0.54, +0.11] / -0.86 | -0.10 [-0.23, +0.06] / -0.50 |
 | R2 one new set for every S (pooled marginal fit, theta 0.175) | -0.04 [-0.22, +0.17] / -0.31 | -0.13 [-0.34, +0.15] / -0.56 | -0.09 [-0.16, -0.01] / -0.33 |
@@ -154,7 +154,7 @@ Each cell is the mean over the 48 settings at that T.
 - R3: -0.26% [-0.49, -0.01] and -0.20% [-0.47, +0.20].
 - R1 is identical to production there.
 
-**Gain of R1 over production today:** +2.0% on the grid mean; +6.4 / +5.9% at T 0.3 / 0.4 and +3.8% at T 1.1 / 1.2
+**Gain of R1 over production before f5fbd2542:** +2.0% on the grid mean; +6.4 / +5.9% at T 0.3 / 0.4 and +3.8% at T 1.1 / 1.2
 (pooled); 0.0% from 0.5 to 1.0.
 
 **Outside the grid** (pooled, against that setting's own tables):
@@ -183,8 +183,8 @@ costs about 0.2% at the card settings unless production's two sets stay as overr
   (production names may differ). That is 5 x 96 B = 480 B, plus 2 thetas. Values: `out/cf/recommended-c.txt`.
 - **Selection,** per request from `dparams.target_temp` (`slot.task->params.sampling.temp`, already passed):
   - `t >= 0.95f && t <= 1.05f`: thinking set, theta 0.15;
-  - otherwise (also t <= 0, greedy, and t < 0, unknown): chat set, theta 0.125.
-  - The p-min test is no longer reached while `LLAMA_SPEC_STOP_ISO` is set.
+  - otherwise (also t < 0, unknown): chat set, theta 0.125.
+  - As shipped (default branch f5fbd2542), greedy requests (0 <= T < 0.001, not in the grid) keep the p-min test.
 - **Env:** the same as widening `LLAMA_SPEC_STOP_ISO_TEMP` to all temperatures, provided the thinking window
   (`LLAMA_SPEC_STOP_ISO_THINK_TEMP`) is checked first.
 - **Lookup:** as today. Linear interpolation on `spec_iso_x`, s_iso *= iso_q(q_id) after each drafted token, and stop
@@ -205,7 +205,8 @@ costs about 0.2% at the card settings unless production's two sets stay as overr
   different text does to the tables (0.25% on average).
 - Grammar (tools) requests are not covered: 9 of 72 prompts are excluded.
 - n-max 4 only. 21 test prompts per trace. A target T <= 0 uses the greedy verify; T 0.1 stands in for it.
-- The lookup is assumed to interpolate linearly; the research branch's `spec_iso_lookup` was not read.
+- The lookup was assumed to interpolate linearly; checked afterwards: `spec_iso_lookup` is piecewise-linear between the
+  table's points and clamped at both ends, so the assumption holds.
 
 Runtime: about 15 min of single-threaded CPU at nice 10, at most 2 processes. Caches take 244 MB in
 `analysis/cache/cf/`.

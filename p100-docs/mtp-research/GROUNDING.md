@@ -3,7 +3,7 @@
 The rule of [README.md](README.md) was fit and measured on thinking-off chat at contexts of 8.5k tokens or less.
 These four test windows measured it where it hadn't been, and fixed what they found. Production (the default branch
 `p100-optimizations-keoian`) runs the result: CHANGES §22 there, commits `c44158c77`, `a6c045269`, `504d4d353`,
-`e0b402541`.
+`e0b402541`, and `f5fbd2542` (the chat tables at every other temperature, [CF_ANALYSIS.md](CF_ANALYSIS.md)).
 
 ## Exactness, checked in code first
 
@@ -46,7 +46,8 @@ are unnecessary.
 ## The temperature gate (commit `30ad85064` here, `c44158c77` on the default branch)
 
 The server passes each request's target temperature to the draft (`common_speculative_draft_params::target_temp`).
-The rule applies only in `LLAMA_SPEC_STOP_ISO_TEMP` (default 0.5,0.9). Window 11 checked it with the rule on:
+The rule applies only in `LLAMA_SPEC_STOP_ISO_TEMP` (default 0.5,0.9 on this branch; the default branch's is 0.001,1e9
+since f5fbd2542). Window 11 checked it with the rule on:
 - thinking-on replies equal production's, 48 of 48 (token and accept counts per request; text apart from random
   tool-call ids);
 - thinking-off replies equal the ungated rule's, 72 of 72.
@@ -54,7 +55,7 @@ The rule applies only in `LLAMA_SPEC_STOP_ISO_TEMP` (default 0.5,0.9). Window 11
 ## Thinking tables (window 11 traces, window 12 A/B)
 
 - **Traces:** thinking on, medium effort, card sampling, p-min 0, n-max 4 and 8, all 72 prompts: 18,530 and 17,845
-  cycles.
+  cycles (as loaded for the analysis; the trace files hold 18,532 and 17,846 records, the warm-up's among them).
 - **Fit:** `analysis/run_think.sh` (`MTP3_TRACESET=think`; the default path still reproduces every output
   byte for byte).
 - **Tables:** acceptance at a given draft probability is higher than the chat tables say: 0.251 vs 0.115 at q 0.02,

@@ -46,7 +46,7 @@ It stacks with the stop rule. n-max 4 stays the best depth even under leniency.
 | trace-n8p0 + T-n8p0 | 4,474 cycles | 72 | n-max 8, p-min 0 |
 | trace-I + I-on | 1,416 cycles | 21 (dev, sweep categories) | n-max 4, p-min 0.2: real p-min stops, so the verify runs at 1-5 active columns |
 
-`TRACE_SCHEMA.md` matches the records field for field (its "not built or run yet" header is stale), apart from these findings:
+`TRACE_SCHEMA.md` matches the records field for field, apart from these findings:
 - **Task 0** is the server warm-up request. It is absent from the T files and was dropped.
 - **`emitted` never contains a reply's first token**, the one sampled from the prompt logits. The task-type proxies rebuild it from the T row's text.
 - **Cut cycles:**
@@ -402,14 +402,16 @@ The rule: accept drafted token d when teacher p_draft >= lambda × top-1 p (or p
 3. **Cost model.**
    - Verify at W 2-4 and 7 is calibrated on B3, and W 6 and 8 are interpolated.
    - The column saving is measured only at W=5. The gain needs n_active column skipping.
-4. **Sampling regime.** Thinking-off sampling only (per-token rule, sampled drafts at T 1.0). Block verify, greedy drafts and thinking budgets are not covered.
+4. **Sampling regime.** Thinking-off sampling only (per-token rule, sampled drafts at T 1.0). Block verify, greedy drafts and thinking budgets are not covered here; thinking, block verify and the budget sampler were measured later ([GROUNDING.md](GROUNDING.md)), other sampling settings in [CF_ANALYSIS.md](CF_ANALYSIS.md).
 5. **Off-policy features.** Rolling and Difficulty features come from the trace's own trajectory.
 6. **Grammar positions** use min(1, p/q) instead of p_draft (2% of cycles).
 7. **The oracle** uses the realized a; the exact-safe ceiling is lower.
 
 ## 10. Recommendation
 
-1. **Implement the exact-safe lookup rule in place of `p < p_min`** (`common/speculative.cpp:1834`):
+Status: built and measured (+4.7% on all 72 prompts, +8.0% held out; README, GROUNDING.md), in production since 10-24 from the default branch.
+
+1. **Implement the exact-safe lookup rule in place of `p < p_min`** (`common/speculative.cpp`, the MTP draft's stop test, ~line 1908 as of `cf2762d8c`):
    - S_hat = prod_{i<d} iso_q(q_i) × iso_p1(p1_d) < 0.125 at n-max 4;
    - two 24-entry tables (`out/iso_tables.txt`), env-gated, default off; the earlier q's are already in `dp.dists`;
    - A/B it measured against production and against p-min 0.5;
@@ -418,7 +420,7 @@ The rule: accept drafted token d when teacher p_draft >= lambda × top-1 p (or p
 3. **Lenient acceptance** is the only lever beyond about +5%. It is approximate and needs a quality evaluation, and grammar paths must stay exact.
 4. **More depth is not useful** until wide verifies get cheaper per column above W=5.
 
-## 11. Files (`/work/bench/mtp3/analysis/`)
+## 11. Files (`analysis/`; working copy `/work/bench/mtp3/analysis/`)
 
 | file | purpose |
 |---|---|
@@ -436,4 +438,7 @@ The rule: accept drafted token d when teacher p_draft >= lambda × top-1 p (or p
 | `lenient.py` | Q4 |
 | `tasktype.py` | Q5 |
 | `iso_tables.py` | the rule's lookups |
+| `run_think.sh` | the thinking-on trace set (`MTP3_TRACESET=think`), added later ([GROUNDING.md](GROUNDING.md)) |
+| `counterfactual.py`, `cf*.py`, `run_cf.sh` | tables for any sampling setting from raw-logit traces, added later ([CF_ANALYSIS.md](CF_ANALYSIS.md)) |
+| `nmax_smoke.py` | deeper caps with the rule, added later ([CF_ANALYSIS.md](CF_ANALYSIS.md)) |
 | `out/*.txt` | all outputs |
