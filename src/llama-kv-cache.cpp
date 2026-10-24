@@ -407,7 +407,9 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
 
         uint32_t new_head = cells.size();
 
-        for (uint32_t i = 0; i < cells.size(); ++i) {
+        // only the used range can hold positions: a 262k-cell cache is otherwise scanned in full (~0.16 ms)
+        // on every call, and speculative decoding removes the rejected drafts several times per cycle
+        for (uint32_t i = cells.used_min(), n = cells.used_max_p1(); i < n; ++i) {
             if (!cells.pos_in(i, p0, p1)) {
                 continue;
             }
@@ -431,7 +433,7 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
 
             uint32_t new_head = cells.size();
 
-            for (uint32_t i = 0; i < cells.size(); ++i) {
+            for (uint32_t i = cells.used_min(), n = cells.used_max_p1(); i < n; ++i) {
                 if (!cells.pos_in(i, p0, p1)) {
                     continue;
                 }
