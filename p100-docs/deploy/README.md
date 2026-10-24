@@ -65,7 +65,7 @@ Expanded from the script with its defaults; argument for argument the command of
 
 ```bash
 LD_LIBRARY_PATH=/work/src/llama.cpp/build-vision/bin \
-GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
+GGML_CUDA_AR_BF16_THRESHOLD=1 GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
 GGML_CUDA_FA_VEC_MAX_Q=16 GGML_CUDA_FA_GEMM_MINQ=17 \
 LLAMA_THINK_BY_BUDGET=1 LLAMA_SAMPLING_BY_MODE=1 \
 LLAMA_SAMPLING_NOTHINK='{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}' \
@@ -81,15 +81,16 @@ build-vision/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
   --host 0.0.0.0 --port 8090
 ```
 
-With `LLAMA_SAMPLING_BY_MODE=1` the chat endpoints take their sampling defaults from the two JSON sets; the CLI
-`--temp/--top-k/--top-p/--min-p` then only serve `/completion`. Why each setting: [QUICKSTART.md](../QUICKSTART.md)
+`GGML_CUDA_AR_BF16_THRESHOLD=1` (`AR_BF16=1`) sends the decode and verify exchanges as bf16 (MTP replies +6.8%, KLD
++1.1%; `AR_BF16=0` for exact f32). With `LLAMA_SAMPLING_BY_MODE=1` the chat endpoints take their sampling defaults
+from the two JSON sets; the CLI `--temp/--top-k/--top-p/--min-p` then only serve `/completion`. Why each setting: [QUICKSTART.md](../QUICKSTART.md)
 ("1440p images and a q8_0 K cache", "Switches on this branch").
 
 ## What `start-qwen.sh` runs with its defaults (the earlier JEV setup)
 
 ```bash
 LD_LIBRARY_PATH=/work/src/llama.cpp/build-exp/bin \
-GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
+GGML_CUDA_AR_BF16_THRESHOLD=1 GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
 LLAMA_THINK_BY_BUDGET=1 LLAMA_SAMPLING_BY_MODE=1 \
 LLAMA_SAMPLING_NOTHINK='{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}' \
 LLAMA_SAMPLING_THINK='{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}' \

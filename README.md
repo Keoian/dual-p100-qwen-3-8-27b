@@ -21,16 +21,16 @@ workload**: a long fixed system prompt, then short turns. The working branch is 
 - **Memory:** everything is in VRAM. The worst case, a 1440p image at 259k tokens of context, peaks at 15,185 and
   16,099 MiB of 16,384 per card.
 
-## Measured (this box, production build and settings, 2026-10-22)
+## Measured (this box, production build and settings, 2026-10-22; decode re-measured 2026-10-24)
 
 | | |
 |---|---|
-| plain decode | **30.7 t/s**; 26.2 at 64k context; 23.4 at 128k |
-| decode with MTP (chat replies) | **~43-45 t/s** (median 42.6 over 8 varied prompts, 44.7 on 256-token replies) |
+| plain decode | **31.1 t/s** (10-24); 26.2 at 64k context, 23.4 at 128k (10-22) |
+| decode with MTP (chat replies) | **~47 t/s** (median 46.9 over 24 replies to 8 varied prompts, thinking-off sampling, 10-24) |
 | prefill | **410 t/s** at 512 tokens, 413 at 2,048; filling the window to 255k runs 355 -> 144 t/s |
 | time to first token | **~0.5 s** for a short message on a 25k-token cached conversation |
 | 1440p screenshot | vision encoder ~5.7 s; small text 96-100% legible; at 259k context: 31.6 s to read it in, then 27.3 t/s |
-| accuracy | KV cache KLD vs an f16 cache **0.00116** (q4_0/q4_0: 0.00274), 99.1% same top token; perplexity 2.6064 |
+| accuracy | KV cache KLD vs an f16 cache **0.00116** (q4_0/q4_0: 0.00274), 99.1% same top token; perplexity 2.6064. The bf16 exchange wire adds 1.1% at verify widths (0.001090 -> 0.001102) |
 
 ## What it adds over Kmic's branch
 
@@ -66,10 +66,20 @@ binary by default, on in the deploy script; QUICKSTART "Switches on this branch"
 **Repetition penalties are free:** the sampler no longer scans the whole 248k vocabulary for every token. Presence
 1.5 with MTP 40.0 -> 44.7 t/s, identical output. *PR*
 
+**Measured on this branch (2026-10-24, [CHANGES.md §21](p100-docs/CHANGES.md)):**
+- the decode and verify exchanges cross the x4 link as bf16 (`AR_BF16=1` in the start script): MTP replies +6.8%,
+  KLD +1.1% (lossy; `AR_BF16=0` for exact f32);
+- with a repetition penalty active, the sampler's top-k prefilter takes top_k + 64 candidates instead of sorting the
+  whole vocabulary: +2.2%, identical output;
+- the KV cache's position cleanup scans only the used cells, not all 262k: MTP replies +1.4%, identical output;
+- Kmic's q4_0-K decode attention no longer spills to local memory at 3-4 tokens: -3 to -5% per call, bit-identical
+  (production's q8_0-K kernel didn't spill).
+
 **Fixes:**
 - a GGML_ASSERT on 9-16-token prompts in Kmic's current tip (*PR*; production's configuration never tripped it, and
   this branch has the fix too since `400aac811`);
 - a use-after-free in the tensor-split backend (*PR*);
+- a recurrent state that went NaN stuck to its slot until a restart (cleared with FILL instead of a SCALE by 0);
 - LoRA adapters under `-sm tensor` (*PR*).
 
 **Also:**

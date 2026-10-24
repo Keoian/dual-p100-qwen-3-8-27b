@@ -316,6 +316,49 @@ CHANGES §16 lists the commits.
   - Each budget-0 turn reprocessed its previous reply (~16 extra tokens), because the forced `</think>` isn't
     byte-equal to how the template re-renders the past turn.
 
+## Ideas from other forks, and where decode time goes (2026-10-24, CHANGES §21)
+
+- **Most of what other P100 forks publish is already here or doesn't apply.**
+  - ik_llama.cpp #2721 (a run-time row index that spilled its fused matvec epilogue to local memory): our dense
+    `mul_mat_vec_q` already selects the row at compile time (STACK 0). Only the MoE kernel has the pattern.
+  - qr0n's MMVQ overrun is in a kernel this branch doesn't have.
+  - "Q6_K is the slowest quant on sm_60" (2.29x Q4_1) comes from stock kernels. Here the Q6_K matvec reads ~457 GB/s
+    and time tracks bytes; Kmic measured Q5_K_M at -4% with MTP.
+  - pxa's best Q6_K matvec (388 GB/s) is below ours; buun's threaded multi-GPU dispatch targets launch-bound hosts.
+- **The same bug class did exist in our attention kernel.** `cuobjdump -res-usage` over the library lists every
+  kernel with a stack frame. The q4p q4_0-K instances at 3 and 4 tokens had 32 bytes; `nvdisasm -g` on a `-lineinfo`
+  build of the one header put the loads at `fattn-q4p.cuh`'s nibble extraction (`w[pt][k]`, k loop left rolled). Fixed
+  in CHANGES §21: -3 to -5% on those calls, bit-identical.
+- **The UD-Q6_K file stores the delta-net `ssm_alpha` / `ssm_beta` as Q8_0** (all 48 layers; Kmic's plain Q6_K file
+  has Q6_K). His fused gate kernel accepts only Q6_K, so it never runs on the UD file. Not worth extending: his own
+  measurement of the fusion was 0.3-0.4 ms per 47-48 ms verify pass.
+- **Where decode time goes** (nvprof, production KV config; the profiler adds ~15%):
+  - Both GPUs are busy 96-97% of a decode token. Idle time is ~1.3 ms per token, almost all in sub-microsecond gaps
+    between kernels, so fusing launches has little left to win.
+  - Matvecs are ~67% of a token (q6_K 14.3 ms, q5_K 6.8, q8_0 4.1). The AllReduce kernel is ~10% of a decode token
+    and ~18% of a 5-token verify batch. The delta-net kernel is 1.7% of a token and 1.5% of a verify batch.
+  - Exchange cost fits ~15 us + 0.65 us per KB over GPU1's x4 link. Halving the bytes (bf16 wire, CHANGES §21) gave
+    +7.7% at 5 tokens and +1.6% in plain decode.
+  - Apollo saw 21% GPU idle with Kmic's e48e240a8 on a no-P2P board. The host-staged exchange (§15) is most likely the
+    difference.
+- **`ignore_eos` turns the sampler prefilter off.** It is an EOG logit bias, and any logit bias keeps the whole
+  vocabulary. Fixed-length benchmarks therefore never measure the prefilter, which is how presence 1.5 looked free
+  (§19) while it cost ~2.2% with natural-length replies until `910d2cfb8`.
+- **Kmic's `gate.sh` stops at "fattn-fold-sass.h is stale" on his tip and ours.** The hash covers the whole `fa_fold`
+  namespace. His PR #3 (KaneQuah, 10-05) changed only `fa_fold_dequant`, while the prebuilt SASS is for `fa_fold_qk2`
+  / `fa_fold_pv2`, which are unchanged. So it's a false alarm, but the gate runs nothing after it. Run its perplexity
+  step directly, or hash only the two kernels.
+- **Other forks' numbers next to ours.**
+  - Apollo ran Kmic's build on an x8/x8 board: plain decode 30.95 t/s against our 30.7 on x16 + x4. The x4 link costs
+    nothing in plain decode once the exchange is host-staged.
+  - Their MTP acceptance (0.68 at 2k) is higher than ours: 0.512 at Kmic's sampling, 0.483 at ours, on our 8 prompts.
+    So the sampling settings don't explain it.
+- **Seeded output is deterministic here.** Five identical requests with sampled MTP drafts and `cache_prompt: false`
+  gave one output at Kmic's sampling and at ours. Apollo saw 9 different outputs from 9 such requests on e48e240a8,
+  which predates `bd72ea071`'s MTP hidden-row fix.
+- **qr0n's GEMM-attention NaN** (their issue #4, blamed on cuBLAS 12.8) matches the softmax race fixed here by
+  `03da0202b` (Kmic's #4). Their `fattn-gemm.cu` lacks that barrier.
+
 ## What transfers to other Pascal cards
 
 - **Direct KV-cache dequantization** helps any pre-Volta GPU with a quantized KV cache, and more

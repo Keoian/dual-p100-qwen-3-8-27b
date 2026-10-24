@@ -708,6 +708,42 @@ worked on.
 Earlier: Kmic's PR #4, the softmax barrier (`03da0202b`, §16), was merged and is in his tip. His PR #3 (KaneQuah's
 q8_0/f16 fold prefill) was merged too and superseded our q8_0-K fold prefill (`19d593f8e`, §18).
 
+## 21. Ideas from other P100 forks (2026-10-24)
+
+A survey of the llama.cpp forks other P100 owners watch, checked against this branch's code:
+- qr0n/p100-llama-cpp and shinbunbun/llama-cpp-p100-patches (patch series);
+- ikawrakow/ik_llama.cpp and spiritbuun/buun-llama-cpp;
+- thefallentree/llama.cpp-gp100 and poisonxa16/pxa (Pascal kernels);
+- JVrachnis/pascal-llm-serving, vmelnic/pascal-llm and apollo-mg/Project-Apollo (measurements).
+
+Five changes were kept; the rest were already here, didn't apply, or measured too small (FINDINGS "Ideas from other
+forks"). Numbers are on production's setup unless stated.
+
+| commit | change | source | result |
+|---|---|---|---|
+| `03bb2a866` | recurrent states are cleared with FILL, not SCALE by 0 (0 * NaN = NaN, so a non-finite state never cleared) | qr0n 0014 | correctness; output identical |
+| `5974d909e` | KV cache `seq_rm` scans only the used cells (a 262k-cell scan took ~165 us, several times per MTP cycle) | gp100 `0dcfac10`'s observation | MTP replies +1.4%, output identical |
+| `910d2cfb8` | sampler top-k prefilter also with penalties that only lower logits (top_k + penalty_last_n candidates) | shinbunbun 13 | presence 1.5 / repeat / frequency: +2.2-2.3%, output identical |
+| `c73976485` | q4p attention: the q4_0-K branch picks its K word instead of indexing it at run time (32-byte stack frame at 3-4 tokens) | ik #2721's bug class | q4_0 K, 3 tokens -4.3..-5.5%, 4 tokens -2.9..-3.1%; bit-identical; production's q8_0-K kernel unchanged |
+| `ef2df6c23` | `start-qwen.sh`: `AR_BF16=1`, the decode and verify exchanges cross PCIe as bf16 | upstream's default, off on Pascal since §15 | MTP replies 49.45 -> 52.80 t/s (+6.8%); KLD +1.1% |
+
+**Measuring the sampler change.** `ignore_eos` is an EOG logit bias, and any logit bias makes the prefilter keep the
+whole vocabulary. So fixed-length benchmarks that set it never take the prefilter, which is why §19's presence-penalty
+measurements showed no cost. With natural-length replies, three paired A/Bs gave -2.15%, -2.27% and -2.31% decode
+time, faster on every one of 63 requests, and 72 replies identical across five penalty settings and both draft modes.
+
+**The bf16 exchange wire.** A GPU timeline (nvprof) of decode and of a 5-token batch shows both GPUs busy 96-97% of
+the time. The largest non-matvec item is the AllReduce kernel: ~10% of a decode token, ~18% of a 5-token batch. Its
+cost per exchange fits ~15 us + 0.65 us per KB over GPU1's x4 link, so halving the bytes pays at verify widths:
+- llama-bench, ABAB: pp5 90.8 -> 97.7 t/s (+7.7%), tg128 30.6 -> 31.1 (+1.6%);
+- server, MTP replies (thinking-off sampling, natural length, 24 replies per arm, two rounds): 49.45 -> 52.80 t/s
+  (+6.8%);
+- accuracy at -ub 5 against an f16-cache reference: mean KLD 0.001090 -> 0.001102 (+1.1%), p99 0.006956 -> 0.007015,
+  same top 99.127 -> 99.084% (+/- 0.05).
+
+It is lossy: each GPU's partial sums are rounded to bf16 before they are added, and output no longer matches the f32
+wire's for the same seed. Prefill exchanges over 1 MB keep their exact path. `AR_BF16=0` restores exact f32.
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,

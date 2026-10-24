@@ -17,6 +17,7 @@ save/restore", "1440p images and a q8_0 K cache" and "Switches on this branch" b
 | vision | `--mmproj` (Q8_0) on GPU0 | Q8_0 projector on GPU1 (`-mmdev CUDA1`), `--image-max-tokens 3600` | 2560x1440's pixel area keeps small text legible; GPU1 has the room |
 | checkpoints / RAM cache | server defaults (32, 8 GiB) | `-ctxcp 32 --cache-ram 24576` | a larger RAM prompt cache on a 48 GB host; on 32 GB use `CTXCP=4 CACHE_RAM=8192` |
 | attention routing | defaults | `GGML_CUDA_FA_VEC_MAX_Q=16 GGML_CUDA_FA_GEMM_MINQ=17` | required with a q8_0 K cache at 262k, else out of memory at depth |
+| exchange wire | f32 | bf16 (`GGML_CUDA_AR_BF16_THRESHOLD=1`, `start-qwen.sh`: `AR_BF16=1`) | MTP replies +6.8% over the x4 link; lossy (KLD +1.1%); `AR_BF16=0` for exact f32 |
 | thinking | template default (on) | `--reasoning off`, `LLAMA_THINK_BY_BUDGET=1` | chat apps that hide reasoning show nothing while it thinks; a toggle reprocesses 21-42 tokens, not the chat |
 | sampling | 1.0 / 0.95 / 20 / 0 | `LLAMA_SAMPLING_BY_MODE=1`: thinking off 0.7 / 0.8 / 20 / 0 with presence 1.5, thinking 1.0 / 0.95 / 20 / 0 | the model card has a separate thinking-off set |
 | access | :8080, no key | :8090, `--api-key-file`, `--alias qwen3.8-27b`, `--slot-save-path` | OpenAI-compatible clients |
@@ -243,6 +244,8 @@ A/B testing.
 | `GGML_CUDA_AR_P2P=0` | the tensor-parallel exchange back to copy-then-add (the one-kernel P2P version is bit-identical and faster) |
 | `GGML_CUDA_FUSE_FFN_GLU=0` | the FFN gate, up and SwiGLU as three kernels again (bit-identical) |
 | `LLAMA_SPEC_BLOCK_VERIFY=0` | per-token draft verification instead of block verification (same output distribution; block accepts more) |
+| `LLAMA_SAMPLER_PREFILTER=0` | the sampler materializes and sorts the whole vocabulary for every token instead of selecting top-k straight from the logits (same output; with any logit bias, `ignore_eos` included, it does this anyway) |
+| `LLAMA_SAMPLER_PREFILTER_PENALTIES=0` | with a repetition / frequency / presence penalty active, the whole vocabulary instead of the top_k + penalty_last_n prefilter (same output; the prefilter is +2.2% with MTP, CHANGES §21) |
 | `GGML_CUDA_FA_Q4P_Q8K=0` | a q8_0 K cache back to the generic decode/verify kernels (vec, tile) instead of q4p's q8_0-K variant |
 | `GGML_CUDA_FA_VEC_MAX_Q=N`, `GGML_CUDA_FA_GEMM_MINQ=N` | routing for caches without a direct tile path (default 2 / 128; the q8_0 setup needs 16 / 17, else the tile kernel's whole-cache f16 copy runs out of memory at depth) |
 | `LLAMA_MTP_DRAFT_VOCAB=0` | the MTP draft scores the full vocabulary instead of a small copy of the common tokens. Saves ~112 MiB per card, drafts get slower, output is unchanged |
@@ -256,7 +259,7 @@ A/B tests, the server ones change behaviour. Where `start-qwen.sh` sets one, its
 |---|---|---|
 | `GGML_CUDA_AR_HOST` | on for two Pascal cards without P2P | host-staged tensor-parallel AllReduce for small (decode / verify) exchanges; `=0` sends them as driver-staged peer copies |
 | `GGML_CUDA_AR_HOST_MAX` | 1048576 (bytes) | largest exchange the host-staged path takes; larger (prefill) ones take the peer copy + ADD |
-| `GGML_CUDA_AR_BF16_THRESHOLD` | 0 (off) with the host-staged Pascal path, 1 elsewhere | tensors of at least this many bytes are reduced through a lossy fp32 -> bf16 round trip; this branch turns it off on Pascal |
+| `GGML_CUDA_AR_BF16_THRESHOLD` | 0 (off) with the host-staged Pascal path, 1 elsewhere (`start-qwen.sh`: `AR_BF16`, 1) | tensors of at least this many bytes are reduced through a lossy fp32 -> bf16 round trip. The branch's code default is off on Pascal; production turns it on: MTP replies +6.8%, KLD +1.1% (CHANGES §21) |
 | `GGML_CUDA_XCHG_NOP2P` | 1 | overlaps the prefill exchange with the chunked matmul when the cards have no P2P; `=0` off |
 | `GGML_CUDA_MMVQ_CHUNK_MAX` | 28 | 9..N-column q6_K/q5_K batches run as fp16 mat-vec column chunks (at 9..16 the single-launch fp16 matvec goes first when its shape check accepts); `=0` sends them on to the GEMM paths |
 | `GGML_CUDA_MMVQ_CHUNK_ALL` | 0 | `=1` chunks every MMVQ type through the integer path (KLD +87%) |
