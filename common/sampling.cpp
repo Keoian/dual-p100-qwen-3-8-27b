@@ -525,14 +525,23 @@ struct common_sampler * common_sampler_init(
     // The top-k prefilter is exact when every sampler ahead of top_k is a no-op for these
     // params (anything after it only ever sees the k survivors either way). Logit biases,
     // including the vocab's suppress tokens, run first and could move a token into the top k.
+    // Penalties that only lower logits (repeat >= 1, frequency and presence >= 0) change at most
+    // penalty_last_n tokens, so the k largest after them are among the k + penalty_last_n largest
+    // before: select those, and the penalties and top_k then run on them as on the whole vocabulary.
+    // LLAMA_SAMPLER_PREFILTER_PENALTIES=0 keeps the whole vocabulary when penalties are active.
     static const bool prefilter_enabled = [] {
         const char * e = getenv("LLAMA_SAMPLER_PREFILTER");
         return e == nullptr || atoi(e) != 0;
     }();
+    static const bool prefilter_penalties = [] {
+        const char * e = getenv("LLAMA_SAMPLER_PREFILTER_PENALTIES");
+        return e == nullptr || atoi(e) != 0;
+    }();
     if (prefilter_enabled && params.mirostat == 0 && params.top_k > 0 && params.top_k <= 128 && !has_logit_bias) {
+        int32_t extra = 0; // candidates the penalties may push out of the top k
         for (const auto & cnstr : params.samplers) {
             if (cnstr == COMMON_SAMPLER_TYPE_TOP_K) {
-                result->prefilter_k = params.top_k;
+                result->prefilter_k = params.top_k + extra;
                 break;
             }
             const bool noop =
@@ -542,7 +551,12 @@ struct common_sampler * common_sampler_init(
                 (cnstr == COMMON_SAMPLER_TYPE_DRY &&
                     (params.dry_multiplier == 0.0f || params.dry_base < 1.0f || params.dry_penalty_last_n == 0)) ||
                 (cnstr == COMMON_SAMPLER_TYPE_TOP_N_SIGMA && params.top_n_sigma <= 0.0f);
-            if (!noop) {
+            const bool lowers = cnstr == COMMON_SAMPLER_TYPE_PENALTIES && prefilter_penalties && extra == 0 &&
+                params.penalty_last_n > 0 && params.penalty_last_n <= 128 &&
+                params.penalty_repeat >= 1.0f && params.penalty_freq >= 0.0f && params.penalty_present >= 0.0f;
+            if (!noop && lowers) {
+                extra = params.penalty_last_n;
+            } else if (!noop) {
                 break;
             }
         }
