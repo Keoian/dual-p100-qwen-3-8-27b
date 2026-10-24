@@ -72,10 +72,14 @@ AR_BF16=${AR_BF16:-1}
 export GGML_CUDA_AR_BF16_THRESHOLD=${GGML_CUDA_AR_BF16_THRESHOLD:-$AR_BF16}
 # STOP_ISO=<theta>: the MTP draft stops by a lookup of how likely the drafted tokens are to be accepted (LLAMA_SPEC_STOP_ISO,
 # CHANGES §22) instead of the p-min test, for requests at target temperature 0.5-0.9 (thinking off; LLAMA_SPEC_STOP_ISO_TEMP).
-# Exact: same output distribution. 10-24: chat replies 49.30 -> 51.61 t/s (+4.7%), long context 32k-200k +4.8%;
-# thinking requests (T 1.0) keep p-min, the tables gain nothing there. STOP_ISO=0: p-min for every request
+# Exact: same output distribution. 10-24: chat replies 49.30 -> 51.61 t/s (+4.7%), long context 32k-200k +4.8%.
+# STOP_ISO=0: p-min for thinking-off requests.
+# STOP_ISO_THINK=<theta>: the same rule with tables fit on thinking-on traces, for requests at target temperature
+# 0.95-1.05 (thinking on; LLAMA_SPEC_STOP_ISO_THINK_TEMP). 10-24: medium effort, 72 prompts, +2.9%.
+# STOP_ISO_THINK=0: p-min for thinking requests
 STOP_ISO=${STOP_ISO:-0.125}
-export LLAMA_SPEC_STOP_ISO=${LLAMA_SPEC_STOP_ISO:-$STOP_ISO}
+STOP_ISO_THINK=${STOP_ISO_THINK:-0.15}
+export LLAMA_SPEC_STOP_ISO=${LLAMA_SPEC_STOP_ISO:-$STOP_ISO} LLAMA_SPEC_STOP_ISO_THINK=${LLAMA_SPEC_STOP_ISO_THINK:-$STOP_ISO_THINK}
 # CUDA graphs for the single-token MTP draft steps only; sampled drafts verified with the speculative-sampling rule
 export GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20
 export LLAMA_THINK_BY_BUDGET="$THINK_BY_BUDGET" LLAMA_SAMPLING_BY_MODE="$SAMPLING_BY_MODE" LLAMA_SAMPLING_NOTHINK="$NOTHINK_SAMPLING" LLAMA_SAMPLING_THINK="$THINK_SAMPLING"
