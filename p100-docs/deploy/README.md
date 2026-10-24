@@ -107,12 +107,16 @@ build-exp/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
   --host 0.0.0.0 --port 8090
 ```
 
+`AR_BF16=1` (`GGML_CUDA_AR_BF16_THRESHOLD=1`) is this setup's default too. It was measured only on production; the
+JEV numbers under "Acceptance checks" are f32 (`AR_BF16=0`).
+
 `GGML_CUDA_P2P` is deliberately not set: on a board without peer access it enables nothing, and the operator's rule
 is no P2P with JEV loaded until a supervised test. Env switches of the script: `JEV=0` (no System 1),
 `JEV_KV=q4_0` (smaller decision cache, ~67 MiB/GPU less, KL 3.5e-4 vs f16), `MMDEV=` (projector on the default
 device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `THINK_BY_BUDGET=0` / `SAMPLING_BY_MODE=0` / `NOTHINK_SAMPLING=<json>` / `THINK_SAMPLING=<json>` (CHANGES §19;
-QUICKSTART "Switches on this branch"), `ALIAS=`, `API_KEY_FILE=` (no key),
-`CTX=`, `BUILD=`, `MODEL=`, `JEV_DIR=`. Why each choice: [QUICKSTART.md](../QUICKSTART.md).
+QUICKSTART "Switches on this branch"), `AR_BF16=0` (exact f32 exchanges; an exported
+`GGML_CUDA_AR_BF16_THRESHOLD` wins over it), `ALIAS=`, `API_KEY_FILE=` (no key), `CTX=`, `BUILD=`, `MODEL=`,
+`JEV_DIR=`. Why each choice: [QUICKSTART.md](../QUICKSTART.md).
 `start-qwen-vision.sh` (production; copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision`, as in the
 recipe above) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->
 0.00116), the Q8_0 vision projector and images up to 2560x1440's pixel area (`IMAGE_MAX_TOKENS=3600`); numbers in
@@ -147,7 +151,9 @@ uses 2048 so a dropped long prompt frees the server in ~2 s).
 
 The gate needs both GPUs: stop the server first. `tools/gate.sh` always measures a q4_0/q4_0 cache (its
 `llama-bench` and `llama-perplexity` lines pass `-ctk q4_0 -ctv q4_0`), and its default `MODEL` is not this layout's,
-so pass `MODEL=`.
+so pass `MODEL=`. It currently stops at its fold-attention SASS check, before measuring anything: "fattn-fold-sass.h
+is stale". That is a false alarm (BUILD.md), so run its `llama-bench`, `llama-perplexity` and `test-backend-ops` lines
+by hand.
 
 | check | expected on the reference board (150 W), production: `start-qwen-vision.sh`, build-vision |
 |---|---|
@@ -157,10 +163,11 @@ so pass `MODEL=`.
 | a 1440p screenshot | ~15 s at shallow depth |
 | full depth (optional, ~45 min) | chat filled to ~255k + a 1440p image at ~259k: prompt ~32 s, decode ~28 t/s, GPU1 peak ~16.1 GB |
 
-With `start-qwen.sh` and its defaults (the JEV setup, build-exp; for the gate `ln -sfn build-exp build-opt`):
-`verify.sh` health ok, decide ~0.9 s, chat ~2-3 s, idle VRAM ~14.3 / 15.4 GB; gate PPL 2.6074, tg256 ~30.2; an image
-question ~5-6 s for any size up to 10 MP (resized to ~1,020 tokens); full depth (optional, ~25 min) chat filled to
-~255k with decisions + an image at 256k: no errors, GPU1 peak ~16.15 GB.
+With `start-qwen.sh` and its defaults (the JEV setup, build-exp; for the gate `ln -sfn build-exp build-opt`; measured
+with f32 exchanges, before `AR_BF16=1` became the default): `verify.sh` health ok, decide ~0.9 s, chat ~2-3 s, idle
+VRAM ~14.3 / 15.4 GB; gate PPL 2.6074, tg256 ~30.2; an image question ~5-6 s for any size up to 10 MP (resized to
+~1,020 tokens); full depth (optional, ~25 min) chat filled to ~255k with decisions + an image at 256k: no errors, GPU1
+peak ~16.15 GB.
 
 ## Diagnostics (`diag/`)
 
@@ -171,4 +178,4 @@ question ~5-6 s for any size up to 10 MP (resized to ~1,020 tokens); full depth 
 - `ballast.cu`: holds GPU memory on one device until killed, to test with less VRAM headroom
   (`nvcc -O2 -arch=sm_60 -o ballast ballast.cu`, then `ballast <device> <leave_free_MiB>`).
 
-Records of how these numbers were measured: [CHANGES.md §15-16, §18-20](../CHANGES.md), [FINDINGS.md](../FINDINGS.md).
+Records of how these numbers were measured: [CHANGES.md §15-16, §18-21](../CHANGES.md), [FINDINGS.md](../FINDINGS.md).

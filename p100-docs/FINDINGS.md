@@ -278,7 +278,7 @@ CHANGES §16 lists the commits.
     fusion, and only a whole model run trips it.
   - The fix (the predicate asks the dispatch's own shape check) went to the base as a PR (Kmic's #5). Production's
     configuration never aborted (llama-bench pp9-16 runs clean); since `400aac811` (10-22, CHANGES §20) this branch
-    has the fix too.
+    has the fix too, and production runs it since 10-24.
   - Workaround on a build without the fix: `GGML_CUDA_FOLD_GLU=0` turns the SwiGLU-into-fold-GEMM fusion off
     (`ggml_cuda_gemm_fold_glu_ok`, gemm-fold.cu), so no GLU is ever skipped.
 - **Re-measure every PR claim on the base, ABBA, and label the rest.** Several numbers measured on this branch didn't
@@ -304,8 +304,10 @@ CHANGES §16 lists the commits.
   - "low" doesn't reliably think less than xhigh.
 - **A repetition penalty cost 7-10% decode, through the sampler, not the model.** llama.cpp's penalty stage looked up all
   248,320 candidates in its count map for every sampled token, and MTP samples every verified token. Visiting only the
-  window's tokens made presence 1.5 free (MTP 40.0 -> 44.7 t/s, identical text). Teaching the MTP draft the penalty
-  lowered acceptance instead (0.493 -> 0.462): its flatter logits over-react.
+  window's tokens removed the scan (MTP 40.0 -> 44.7 t/s, identical text). Those runs used `ignore_eos`, which hid the
+  rest: presence 1.5 still cost ~2.2% at natural length until `910d2cfb8` ("`ignore_eos` turns the sampler prefilter
+  off" below). Teaching the MTP draft the penalty lowered acceptance instead (0.493 -> 0.462): its flatter logits
+  over-react.
 - **MTP and no-MTP greedy text differ on near ties with no penalty at all** (3 of 8 prompts). Changing only the draft's
   top-k flips the same texts, so compare greedy outputs only between runs with identical draft settings.
 - **Thinking off can be a budget instead of a template switch.**
@@ -323,8 +325,10 @@ CHANGES §16 lists the commits.
     `mul_mat_vec_q` already selects the row at compile time (STACK 0). Only the MoE kernel has the pattern.
   - qr0n's MMVQ overrun is in a kernel this branch doesn't have.
   - "Q6_K is the slowest quant on sm_60" (2.29x Q4_1) comes from stock kernels. Here the Q6_K matvec reads ~457 GB/s
-    and time tracks bytes; Kmic measured Q5_K_M at -4% with MTP.
-  - pxa's best Q6_K matvec (388 GB/s) is below ours; buun's threaded multi-GPU dispatch targets launch-bound hosts.
+    (5120x8704 in 79.9 us, CHANGES §17) and time tracks bytes; Kmic measured Q5_K_M at -4% with MTP (OPTLOG attempt
+    282: 78.4 vs Q6_K's 81.4 t/s).
+  - pxa's best Q6_K matvec (388 GB/s, a code comment in pxa's `kq-mmv.cuh`) is below ours; buun's threaded multi-GPU
+    dispatch targets launch-bound hosts.
 - **The same bug class did exist in our attention kernel.** `cuobjdump -res-usage` over the library lists every
   kernel with a stack frame. The q4p q4_0-K instances at 3 and 4 tokens had 32 bytes; `nvdisasm -g` on a `-lineinfo`
   build of the one header put the loads at `fattn-q4p.cuh`'s nibble extraction (`w[pt][k]`, k loop left rolled). Fixed
@@ -333,8 +337,8 @@ CHANGES §16 lists the commits.
   has Q6_K). His fused gate kernel accepts only Q6_K, so it never runs on the UD file. Not worth extending: his own
   measurement of the fusion was 0.3-0.4 ms per 47-48 ms verify pass.
 - **Where decode time goes** (nvprof, production KV config; the profiler adds ~15%):
-  - Both GPUs are busy 96-97% of a decode token. Idle time is ~1.3 ms per token, almost all in sub-microsecond gaps
-    between kernels, so fusing launches has little left to win.
+  - Both GPUs are busy 96-97% of a decode token. Idle time is ~1.3 ms per token, spread over ~1,444 gaps
+    between kernels, mostly 20 us or less each, so fusing launches has little left to win.
   - Matvecs are ~67% of a token (q6_K 14.3 ms, q5_K 6.8, q8_0 4.1). The AllReduce kernel is ~10% of a decode token
     and ~18% of a 5-token verify batch. The delta-net kernel is 1.7% of a token and 1.5% of a verify batch.
   - Exchange cost fits ~15 us + 0.65 us per KB over GPU1's x4 link. Halving the bytes (bf16 wire, CHANGES §21) gave
@@ -349,9 +353,10 @@ CHANGES §16 lists the commits.
   / `fa_fold_pv2`, which are unchanged. So it's a false alarm, but the gate runs nothing after it. Run its perplexity
   step directly, or hash only the two kernels.
 - **Other forks' numbers next to ours.**
-  - Apollo ran Kmic's build on an x8/x8 board: plain decode 30.95 t/s against our 30.7 on x16 + x4. The x4 link costs
-    nothing in plain decode once the exchange is host-staged.
-  - Their MTP acceptance (0.68 at 2k) is higher than ours: 0.512 at Kmic's sampling, 0.483 at ours, on our 8 prompts.
+  - Apollo ran Kmic's build on an x8/x8 board: plain decode 30.95 t/s against our 30.6 (f32 wire) and 31.1 (bf16), on
+    x16 + x4. The x4 link costs nothing in plain decode once the exchange is host-staged.
+  - Their MTP acceptance (0.68 at 2k) is higher than ours: 0.512 at Kmic's sampling, 0.46-0.48 at ours (presence 1.5),
+    on our 8 prompts.
     So the sampling settings don't explain it.
 - **Seeded output is deterministic here.** Five identical requests with sampled MTP drafts and `cache_prompt: false`
   gave one output at Kmic's sampling and at ours. Apollo saw 9 different outputs from 9 such requests on e48e240a8,
@@ -381,4 +386,5 @@ checkpoints). At the 175 W cap the exact-math ceiling is about 176 t/s against 1
 Plain decode at 229k context is 46.6 ms per token: 22.9 for weights and everything else, 23.7 for
 attention. At that shape an f16 KV cache runs at the bandwidth limit (480 GB/s), while q4_0 manages
 99 GB/s despite reading a quarter of the bytes. The gap is dequant work and the shared-memory round
-trip. Closing it needs a kernel that dequantizes K into registers, which is new work, not tuning.
+trip. Closing it needs a kernel that dequantizes K into registers, which is new work, not tuning. (The q4p kernel,
+CHANGES §10, is that kernel.)

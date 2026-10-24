@@ -623,7 +623,9 @@ t/s, small text 96-100% per size, peaks 15,187 / 16,101 MiB (GPU1 ~280 MiB from 
 **`LLAMA_SAMPLING_BY_MODE=1`:** fills sampling fields a request leaves out from the model card's set for its
 effective mode:
 - thinking: 1.0 / 0.95 / 20 / 0;
-- thinking off: 0.7 / 0.8 / 20 / 0, with `presence_penalty` from `LLAMA_SAMPLING_NOTHINK` (card 1.5; the deploy script used 0 until the penalty sampler fix below made 1.5 free, and 1.5 since).
+- thinking off: 0.7 / 0.8 / 20 / 0, with `presence_penalty` from `LLAMA_SAMPLING_NOTHINK` (card 1.5; the deploy script
+  used 0 until the penalty sampler fix below removed the vocabulary scan, and 1.5 since; the top-k prefilter runs with
+  penalties since `910d2cfb8`, §21).
 The GGUF and the base QUICKSTART carry only the thinking set, which had been served with thinking off. Client values win.
 
 **Presence penalty and MTP.** Live server, thinking off, 8 prompts x 256 tokens x 2:
@@ -644,7 +646,8 @@ last 64 tokens, so it doesn't address agentic loops (repeated tool calls turns a
   touches only the <= 64 window tokens at their own indices. Same arithmetic, so greedy text is identical (32 runs,
   MTP and no MTP, presence 1.5 and 0), and test-sampling passes.
 - Decode at presence 1.5, before -> after: MTP 40.0 -> 44.7 t/s, no MTP 27.9 -> 30.0. Presence 0 is unchanged (44.2 /
-  30.0), so the card's 1.5 is now free.
+  30.0). These runs used `ignore_eos`, which keeps the top-k prefilter off in both arms. At natural length 1.5 still
+  cost ~2.2% until `910d2cfb8` (§21).
 - Any client that sends `repeat_penalty` (many default to 1.1) gains the same.
 
 **Tried and not kept: the MTP draft applying the request's penalties** over the same window.
@@ -722,7 +725,7 @@ forks"). Numbers are on production's setup unless stated.
 | commit | change | source | result |
 |---|---|---|---|
 | `03bb2a866` | recurrent states are cleared with FILL, not SCALE by 0 (0 * NaN = NaN, so a non-finite state never cleared) | qr0n 0014 | correctness; output identical |
-| `5974d909e` | KV cache `seq_rm` scans only the used cells (a 262k-cell scan took ~165 us, several times per MTP cycle) | gp100 `0dcfac10`'s observation | MTP replies +1.4%, output identical |
+| `5974d909e` | KV cache `seq_rm` scans only the used cells (a 262k-cell scan took ~165 us; every MTP cycle runs one on the target cache and two on the draft cache) | gp100 `0dcfac10`'s observation | MTP replies +1.4%, output identical |
 | `910d2cfb8` | sampler top-k prefilter also with penalties that only lower logits (top_k + penalty_last_n candidates) | shinbunbun 13 | presence 1.5 / repeat / frequency: +2.2-2.3%, output identical |
 | `c73976485` | q4p attention: the q4_0-K branch picks its K word instead of indexing it at run time (32-byte stack frame at 3-4 tokens) | ik #2721's bug class | q4_0 K, 3 tokens -4.3..-5.5%, 4 tokens -2.9..-3.1%; bit-identical; production's q8_0-K kernel unchanged |
 | `ef2df6c23` | `start-qwen.sh`: `AR_BF16=1`, the decode and verify exchanges cross PCIe as bf16 | upstream's default, off on Pascal since §15 | MTP replies 49.45 -> 52.80 t/s (+6.8%); KLD +1.1% |
@@ -753,7 +756,7 @@ wire's for the same seed. Prefill exchanges over 1 MB keep their exact path. `AR
   Probably the `fattn_gemm_softmax` race fixed in `03da0202b` (§16: same path, same symptoms);
   not re-run with virtual devices.
 - **Prefill at depth is power-bound.** The fold GEMM and attention kernels hold the cards at their
-  175 W cap (§14; the no-P2P board of §15-20 runs at 150 W, §16, so its absolute numbers are lower). Faster code in the same instructions doesn't help; less energy per flop would.
+  175 W cap (§14; the no-P2P board of §15-21 runs at 150 W, §16, so its absolute numbers are lower). Faster code in the same instructions doesn't help; less energy per flop would.
 - **Attention at depth is compute-bound, not bandwidth-bound.** q4p (§10, §11) runs the 5-token
   verify at 262144 in 2.68 ms per call with fp16 products; the cache read alone would take ~0.35.
   It is at 255 registers and one block per SM, so what is left is latency, not arithmetic. Time
@@ -778,6 +781,10 @@ wire's for the same seed. Prefill exchanges over 1 MB keep their exact path. `AR
   the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (root HANDOFF.md, "parked design").
 - **`LLAMA_THINK_BY_BUDGET` on Apertus (§19).** Its thinking-on and thinking-off reply starts are identical, so the
   splice would leave thinking on. A guard was offered, not written; Qwen3.8 (production) is unaffected.
+- **`tools/gate.sh` stops at "fattn-fold-sass.h is stale"** on Kmic's tip and here. The hash covers all of the
+  `fa_fold` namespace, and Kmic's PR #3 changed only `fa_fold_dequant`; the prebuilt SASS is of `fa_fold_qk2` /
+  `fa_fold_pv2`, which are unchanged (FINDINGS "Ideas from other forks"). Run its benchmark, perplexity and op-test
+  lines by hand until the check hashes only those two kernels.
 - **Prefill attention accumulation.** With a q4_0 cache the fold path (`GGML_CUDA_FA_FOLD`,
   default on, OPTLOG 225) accumulates QK^T in fp16 chains of 128 summed in fp32, and PV in fp16
   over 128 keys, fp32 across them. `GGML_CUDA_FA_FOLD=0` returns to the cuBLAS path (fp16 over the

@@ -28,13 +28,13 @@ P2P at 150 W, are in the root [README](../README.md) ("Measured").
 it contains the earlier `tyler-port` work) adds work for boards whose cards can't reach each other (no P2P, e.g.
 one slot behind the chipset), for short chat turns on a long cached prefix (server prompt time per short turn at 26k
 ~1.6-2.0 s -> ~0.56 s on 10-06; now ~0.5 s to the first token on a 25k cached conversation), and for exact slot
-save/restore with MTP on. Its current numbers (150 W, production build and settings: plain decode 30.7 t/s, MTP
-chat replies ~43-45 t/s) are in the root README's "Measured". Phase 3 adds
+save/restore with MTP on. Its current numbers (150 W, production build and settings: plain decode 31.1 t/s, MTP
+chat replies ~47 t/s, 10-24) are in the root README's "Measured". Phase 3 adds
 [JEV-27B](https://huggingface.co/autotrust/JEV-27B) System 1 decisions on the same loaded model (`POST /v1/decide`, a
 separate context with its LoRA; off in its production setup since §18), and fixes a meta-backend use-after-free and
 the softmax race (Caveats below). Later: a q8_0 K / q4_0 V cache at the full 262k with 1440p images and the Q8_0
-projector (§18), thinking toggles that keep the prompt cache and free repetition penalties (§19). The root
-[README](../README.md) leads with its production numbers. [CHANGES.md §15-20](CHANGES.md) has the commits and
+projector (§18), thinking toggles that keep the prompt cache and cheaper repetition penalties (§19, §21). The root
+[README](../README.md) leads with its production numbers. [CHANGES.md §15-21](CHANGES.md) has the commits and
 numbers and the PRs to Kmic-68's `p100-optimizations` (#5-#16), [FINDINGS.md](FINDINGS.md) what worked and what
 didn't, [QUICKSTART.md](QUICKSTART.md) the serving notes, and [deploy/](deploy/README.md) the recipe to bring the
 whole production setup up on another machine.

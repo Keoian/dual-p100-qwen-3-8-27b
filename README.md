@@ -26,7 +26,7 @@ workload**: a long fixed system prompt, then short turns. The working branch is 
 | | |
 |---|---|
 | plain decode | **31.1 t/s** (10-24); 26.2 at 64k context, 23.4 at 128k (10-22) |
-| decode with MTP (chat replies) | **~47 t/s** (median 46.9 over 24 replies to 8 varied prompts, thinking-off sampling, 10-24) |
+| decode with MTP (chat replies) | **~47 t/s** (per-reply median 46.8 over 2 x 24 replies to 8 prompts, thinking-off sampling; 52.8 over all their tokens; 10-24) |
 | prefill | **410 t/s** at 512 tokens, 413 at 2,048; filling the window to 255k runs 355 -> 144 t/s |
 | time to first token | **~0.5 s** for a short message on a 25k-token cached conversation |
 | 1440p screenshot | vision encoder ~5.7 s; small text 96-100% legible; at 259k context: 31.6 s to read it in, then 27.3 t/s |
@@ -58,26 +58,26 @@ cache running out of memory. Decode +9%, +21% at 64k; the q4_0 default is unchan
 
 **Thinking and sampling** (server env switches `LLAMA_THINK_BY_BUDGET=1` and `LLAMA_SAMPLING_BY_MODE=1`: off in the
 binary by default, on in the deploy script; QUICKSTART "Switches on this branch"):
-- Turning thinking on or off per request keeps the prompt cache: a toggle reprocesses 21 tokens instead of 2,146.
+- Turning thinking on or off per request keeps the prompt cache: a toggle reprocesses 21-42 tokens instead of 2,146.
   (Qwen3.8's template puts its effort line at the top of the system prompt.)
 - Each mode gets the model card's sampling for fields a client leaves out.
 - `reasoning_effort` low / medium caps thinking at 512 / 2,048 tokens.
 
-**Repetition penalties are free:** the sampler no longer scans the whole 248k vocabulary for every token. Presence
-1.5 with MTP 40.0 -> 44.7 t/s, identical output. *PR*
+**Repetition penalties no longer scan the vocabulary:** the penalty stage visits only the window's tokens instead of
+all 248k for every sampled token. Presence 1.5 with MTP 40.0 -> 44.7 t/s, identical output. *PR*
 
 **Measured on this branch (2026-10-24, [CHANGES.md §21](p100-docs/CHANGES.md)):**
 - the decode and verify exchanges cross the x4 link as bf16 (`AR_BF16=1` in the start script): MTP replies +6.8%,
   KLD +1.1% (lossy; `AR_BF16=0` for exact f32);
-- with a repetition penalty active, the sampler's top-k prefilter takes top_k + 64 candidates instead of sorting the
-  whole vocabulary: +2.2%, identical output;
+- with a repetition penalty active, the sampler's top-k prefilter takes top_k + penalty_last_n candidates (84 at
+  production's settings) instead of sorting the whole vocabulary: +2.2%, identical output;
 - the KV cache's position cleanup scans only the used cells, not all 262k: MTP replies +1.4%, identical output;
 - Kmic's q4_0-K decode attention no longer spills to local memory at 3-4 tokens: -3 to -5% per call, bit-identical
   (production's q8_0-K kernel didn't spill).
 
 **Fixes:**
 - a GGML_ASSERT on 9-16-token prompts in Kmic's current tip (*PR*; production's configuration never tripped it, and
-  this branch has the fix too since `400aac811`);
+  this branch has the fix too since `400aac811`, which production runs since 10-24);
 - a use-after-free in the tensor-split backend (*PR*);
 - a recurrent state that went NaN stuck to its slot until a restart (cleared with FILL instead of a SCALE by 0);
 - LoRA adapters under `-sm tensor` (*PR*).
@@ -104,7 +104,7 @@ The fork's `p100-optimizations` branch is an old snapshot of Kmic's (2026-10-01)
 
 **Why each setting** (and how it differs from Kmic's command): [p100-docs/QUICKSTART.md](p100-docs/QUICKSTART.md).
 **The exact production command:** [p100-docs/deploy/README.md](p100-docs/deploy/README.md).
-**Every change with its numbers:** [p100-docs/CHANGES.md](p100-docs/CHANGES.md), sections 15-20.
+**Every change with its numbers:** [p100-docs/CHANGES.md](p100-docs/CHANGES.md), sections 15-21.
 **What was learned:** [p100-docs/FINDINGS.md](p100-docs/FINDINGS.md).
 
 Built with Claude Code (AI-assisted). Every commit carries a `Co-Authored-By` trailer, and every number above was

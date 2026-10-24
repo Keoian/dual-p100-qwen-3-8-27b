@@ -31,9 +31,15 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
     0.7 / 0.8 / 20 / 0;
   - `AR_BF16=1` (`GGML_CUDA_AR_BF16_THRESHOLD=1`): the decode and verify exchanges cross PCIe as bf16 (MTP replies
     +6.8%, KLD +1.1%; `AR_BF16=0` for exact f32);
-  - JEV off, API key file, alias `qwen3.8-27b`, `--slot-save-path`, 150 W cap, no `GGML_CUDA_P2P`.
+  - JEV off, API key file, alias `qwen3.8-27b`, `--slot-save-path`, 150 W cap, no `GGML_CUDA_P2P`;
+  - binaries: `build-vision/bin` built 10-24 from c73976485's code (snapshot `/work/bench/forks/exp2`), `400aac811`
+    included;
+  - rollback: copy `/work/bench/think/bin-prod-0d682248f/*` into `build-vision/bin` and restart with `AR_BF16=0`. The
+    bf16 wire off on its own: restart with `AR_BF16=0`;
+  - after a reboot the installed Unraid script runs `/work/start-qwen-vision.sh`, which brings all of this back. It
+    passes no env, so a lasting `AR_BF16=0` belongs in `/work/start-qwen.sh`'s default.
   - Numbers: README "Measured" (production build and settings, 2026-10-22; decode re-measured 10-24).
-- Contributions back to the base: 12 PRs to Kmic-68/llama.cpp `p100-optimizations`, **#5-#16, open as of 10-23**
+- Contributions back to the base: 12 PRs to Kmic-68/llama.cpp `p100-optimizations`, **#5-#16, still open on 10-24**
   (table in CHANGES §20). Each is a branch `p100/<type>-<name>` cut from d90ec36a3 and validated there (identical
   logits for every code PR, gate PPL 2.6074, full op suite with all but the first merged; FINDINGS "Validating PRs").
   Earlier: #4 (the softmax barrier, 03da0202b) was merged; Kmic's #3 (KaneQuah's fold prefill for q8_0/f16) was merged
@@ -47,6 +53,10 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
     thinking on): offered, not written. Production (Qwen3.8 only) is unaffected.
   - When Kmic merges or changes the PRs: merge his tip (never rebase) and repeat the checks of the 10-21 merge
     (CHANGES §18: op suite, PPL for both cache types, logits against the previous build, ABBA speed).
+  - The container predates `--init` (zombie `llama-server` processes after a restart) until it is recreated with
+    `run-container.sh`.
+  - Deleting the fork branch `p100-optimizations` is pending the owner. The old `fix/ perf/ docs/` branch copies are
+    still on the fork.
   - Older open items: CHANGES "Known gaps", and the parked slot-autosave design below (ask first).
 
 ## Branch `kv-q8q4-262k-vision1440-q8proj` (state 2026-10-18; production then, now part of `p100-optimizations-keoian`)
@@ -109,6 +119,9 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
 ### tyler-port: how to measure (lessons that cost time)
 - Server latency: scripted identical prompts, ABAB order, warm the server first (the first request after a start is
   slower and can differ); compare the server's own `prompt_ms`, not whole-conversation totals (sampled replies vary).
+- Sampler changes: natural-length replies, never `ignore_eos`, which is an EOG logit bias and turns the top-k
+  prefilter off in both arms. Same-text arms can be paired per request from the server logs
+  (`/work/bench/forks/paired.py`).
 - Every kernel change: greedy compare on fixed prompts plus a small-batch KLD (`llama-perplexity -b N -ub N
   --kl-divergence`), not only llama-bench, which once blessed a kernel that read the wrong buffer.
 - Intermittent NaN or drift: compare identical runs for bit-identity first; nondeterminism in a single-stream kernel

@@ -1386,6 +1386,11 @@ request leaves out comes from the set for its thinking mode: `LLAMA_SAMPLING_THI
 (default `{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}`), both JSON objects of
 sampling fields. The command-line sampling flags then don't apply to chat requests; they still serve `/completion`.
 
+With a repetition, frequency or presence penalty that only lowers logits, the sampler's top-k prefilter selects the
+top_k + penalty_last_n largest logits instead of sorting the whole vocabulary (this fork; on by default; same
+output). `LLAMA_SAMPLER_PREFILTER_PENALTIES=0` keeps the whole vocabulary when a penalty is active. Any logit bias,
+`ignore_eos` included, turns the top-k prefilter off.
+
 `reasoning_format`: The reasoning format to be parsed. If set to `none`, it will output the raw generated text.
 
 `reasoning_control`: Arms realtime reasoning control for this completion so it can be ended early via `/v1/chat/completions/control`. Defaults to `false`.

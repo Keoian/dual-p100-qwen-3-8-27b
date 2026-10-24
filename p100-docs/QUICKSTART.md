@@ -118,8 +118,8 @@ projector on the second card instead and frees ~850 MiB on GPU0.
 **No P2P.** If `nvidia-smi topo -m` shows the cards behind different root ports (e.g. one slot wired to the chipset at
 x4), `cudaDeviceCanAccessPeer` is likely 0 and `GGML_CUDA_P2P=1` does nothing; leave it out. Keep `-sm tensor` (still
 faster than `-sm layer`); this branch stages the exchanges through pinned host memory. Measured on such a board at
-its 150 W limit with the production build and settings (2026-10-22, root README "Measured"): plain decode 30.7 t/s,
-MTP chat replies ~43-45 t/s, pp512 410 and pp2048 413 t/s, ~0.5 s to the first token for a short message on a 25k
+its 150 W limit with the production build and settings (root README "Measured"): plain decode 31.1 t/s and MTP chat
+replies ~47 t/s (10-24), pp512 410 and pp2048 413 t/s (10-22), ~0.5 s to the first token for a short message on a 25k
 cached conversation, the full 262k context with a 1440p image without running out of memory. (The branch's first
 numbers, 10-06 at 180 W with q4_0/q4_0 and `-ub 2048`, are in CHANGES §15.) Each context checkpoint copy is ~150 MiB
 of host RAM: `start-qwen.sh` defaults to `-ctxcp 4` (llama-server's own default is 32), and the server recycles freed
@@ -138,9 +138,11 @@ With `LLAMA_SAMPLING_BY_MODE=1` the chat endpoints fill every sampling field a r
 `LLAMA_SAMPLING_THINK` / `LLAMA_SAMPLING_NOTHINK`, so the CLI `--temp/--top-k/--top-p/--min-p/--presence-penalty`
 no longer apply to chat; they only serve `/completion`. Change the chat defaults through the two JSON sets
 (`start-qwen.sh`: `THINK_SAMPLING`, `NOTHINK_SAMPLING`).
-Any repetition penalty used to cost 7-10% decode here, because the sampler scanned the whole vocabulary per token;
-since 0d920143d it is free. Presence penalty only sees the last 64 tokens, so it guards against in-reply loops, not
-agentic ones. `--image-max-tokens 1024` (`start-qwen.sh`'s default) because a 2875x1500 image is ~4100 tokens and
+Any repetition penalty used to cost 7-10% decode here, because the sampler scanned the whole vocabulary per token.
+The scan is gone since 0d920143d, and the sampler's top-k prefilter runs with penalties since 910d2cfb8 (until then
+presence 1.5 still cost ~2.2% at natural length, CHANGES §21). Presence penalty only sees the last 64 tokens, so it
+guards against in-reply loops, not agentic ones.
+`--image-max-tokens 1024` (`start-qwen.sh`'s default) because a 2875x1500 image is ~4100 tokens and
 ~19 s before the first byte; capped, ~4 s. Production caps at 3600 tokens instead (2560x1440's pixel area), so small
 text in screenshots stays legible, with the setup in "1440p images" below. The cap is a pixel budget: every image is
 resized to fit it with its aspect ratio kept, so 10 MP images (4380x2285 and a 2592x3888 portrait, tested 10-07 at the
@@ -245,15 +247,14 @@ A/B testing.
 | `GGML_CUDA_FUSE_FFN_GLU=0` | the FFN gate, up and SwiGLU as three kernels again (bit-identical) |
 | `LLAMA_SPEC_BLOCK_VERIFY=0` | per-token draft verification instead of block verification (same output distribution; block accepts more) |
 | `LLAMA_SAMPLER_PREFILTER=0` | the sampler materializes and sorts the whole vocabulary for every token instead of selecting top-k straight from the logits (same output; with any logit bias, `ignore_eos` included, it does this anyway) |
-| `LLAMA_SAMPLER_PREFILTER_PENALTIES=0` | with a repetition / frequency / presence penalty active, the whole vocabulary instead of the top_k + penalty_last_n prefilter (same output; the prefilter is +2.2% with MTP, CHANGES §21) |
 | `GGML_CUDA_FA_Q4P_Q8K=0` | a q8_0 K cache back to the generic decode/verify kernels (vec, tile) instead of q4p's q8_0-K variant |
 | `GGML_CUDA_FA_VEC_MAX_Q=N`, `GGML_CUDA_FA_GEMM_MINQ=N` | routing for caches without a direct tile path (default 2 / 128; the q8_0 setup needs 16 / 17, else the tile kernel's whole-cache f16 copy runs out of memory at depth) |
 | `LLAMA_MTP_DRAFT_VOCAB=0` | the MTP draft scores the full vocabulary instead of a small copy of the common tokens. Saves ~112 MiB per card, drafts get slower, output is unchanged |
 
 ## Switches on this branch (`p100-optimizations-keoian`)
 
-Added by this branch (CHANGES §15, §18, §19). Unset means the default; the kernel and checkpoint switches exist for
-A/B tests, the server ones change behaviour. Where `start-qwen.sh` sets one, its own switch is named.
+Added by this branch (CHANGES §15, §18, §19, §21). Unset means the default; the kernel and checkpoint switches exist
+for A/B tests, the server ones change behaviour. Where `start-qwen.sh` sets one, its own switch is named.
 
 | variable | default | effect |
 |---|---|---|
@@ -276,6 +277,7 @@ A/B tests, the server ones change behaviour. Where `start-qwen.sh` sets one, its
 | `LLAMA_SAMPLING_BY_MODE` | 0 (`start-qwen.sh`: `SAMPLING_BY_MODE`, 1) | `=1`: chat requests get the sampling set of their thinking mode for every field they leave out (the CLI sampling flags then only serve `/completion`) |
 | `LLAMA_SAMPLING_THINK` | `{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}` (`start-qwen.sh`: `THINK_SAMPLING`) | the thinking set, a JSON object of sampling fields |
 | `LLAMA_SAMPLING_NOTHINK` | `{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}` (`start-qwen.sh`: `NOTHINK_SAMPLING`) | the thinking-off set |
+| `LLAMA_SAMPLER_PREFILTER_PENALTIES` | 1 | with a repetition / frequency / presence penalty active, the sampler's top-k prefilter takes top_k + penalty_last_n candidates (same output; +2.2% with MTP, CHANGES §21); `=0` keeps the whole vocabulary |
 
 ## Benchmarking
 

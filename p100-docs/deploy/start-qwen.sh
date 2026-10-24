@@ -25,10 +25,10 @@ REASONING=${REASONING:-off}
 THINK_BY_BUDGET=${THINK_BY_BUDGET:-1}
 # SAMPLING_BY_MODE=1: the model card's sampling per thinking mode, for fields a request leaves out: thinking 1.0/0.95/20/0;
 # thinking off 0.7/0.8/20/0 with the card's presence_penalty 1.5 (against endless repetition; it sees the last 64 tokens).
-# It cost 7-10% decode until 0d920143d made the penalty sampler free (with MTP 44.7 vs 44.2 t/s at 0).
+# It cost 7-10% decode until 0d920143d removed the vocabulary scan, and still ~2.2% at natural length until 910d2cfb8
+# let the sampler's top-k prefilter run with penalties (CHANGES §21).
 # THINK_SAMPLING / NOTHINK_SAMPLING: JSON objects of sampling fields for each mode; the chat endpoints use them in
 # place of the CLI --temp/--top-p/--top-k/--min-p below, which then only serve /completion.
-# The CLI sampling below serves /completion, which has no thinking mode
 SAMPLING_BY_MODE=${SAMPLING_BY_MODE:-1}
 NOTHINK_SAMPLING=${NOTHINK_SAMPLING:-'{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}'}
 THINK_SAMPLING=${THINK_SAMPLING:-'{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}'}
@@ -63,7 +63,6 @@ if [ "$JEV" != 0 ] && [ -f "$JEV_DIR/gguf/jev-27b-lora-f16.gguf" ]; then
 fi
 mkdir -p /work/slots
 export LD_LIBRARY_PATH="$BUILD/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-# CUDA graphs for the single-token MTP draft steps only; sampled drafts verified with the speculative-sampling rule
 # AR_BF16=1: the tensor-parallel exchanges of decode and MTP verify (the host-staged path, up to 1 MB) cross PCIe as bf16
 # instead of f32 (GGML_CUDA_AR_BF16_THRESHOLD=1; the branch's default on Pascal without P2P is exact f32). Lossy: each
 # GPU's partial sums are rounded to bf16 before they are added. 10-24, production setup: MTP replies 49.45 -> 52.80 t/s
@@ -71,6 +70,7 @@ export LD_LIBRARY_PATH="$BUILD/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # AR_BF16=0: exact f32 exchanges
 AR_BF16=${AR_BF16:-1}
 export GGML_CUDA_AR_BF16_THRESHOLD=${GGML_CUDA_AR_BF16_THRESHOLD:-$AR_BF16}
+# CUDA graphs for the single-token MTP draft steps only; sampled drafts verified with the speculative-sampling rule
 export GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20
 export LLAMA_THINK_BY_BUDGET="$THINK_BY_BUDGET" LLAMA_SAMPLING_BY_MODE="$SAMPLING_BY_MODE" LLAMA_SAMPLING_NOTHINK="$NOTHINK_SAMPLING" LLAMA_SAMPLING_THINK="$THINK_SAMPLING"
 exec "$BUILD/bin/llama-server" -m "$MODEL" \
