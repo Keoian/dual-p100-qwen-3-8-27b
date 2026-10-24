@@ -64,6 +64,13 @@ fi
 mkdir -p /work/slots
 export LD_LIBRARY_PATH="$BUILD/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # CUDA graphs for the single-token MTP draft steps only; sampled drafts verified with the speculative-sampling rule
+# AR_BF16=1: the tensor-parallel exchanges of decode and MTP verify (the host-staged path, up to 1 MB) cross PCIe as bf16
+# instead of f32 (GGML_CUDA_AR_BF16_THRESHOLD=1; the branch's default on Pascal without P2P is exact f32). Lossy: each
+# GPU's partial sums are rounded to bf16 before they are added. 10-24, production setup: MTP replies 49.45 -> 52.80 t/s
+# (+6.8%), pp5 +7.7%, tg128 +1.6%; KLD vs an f16 cache at -ub 5 0.001090 -> 0.001102 (+1.1%), same top 99.13 -> 99.08%.
+# AR_BF16=0: exact f32 exchanges
+AR_BF16=${AR_BF16:-1}
+export GGML_CUDA_AR_BF16_THRESHOLD=${GGML_CUDA_AR_BF16_THRESHOLD:-$AR_BF16}
 export GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20
 export LLAMA_THINK_BY_BUDGET="$THINK_BY_BUDGET" LLAMA_SAMPLING_BY_MODE="$SAMPLING_BY_MODE" LLAMA_SAMPLING_NOTHINK="$NOTHINK_SAMPLING" LLAMA_SAMPLING_THINK="$THINK_SAMPLING"
 exec "$BUILD/bin/llama-server" -m "$MODEL" \
