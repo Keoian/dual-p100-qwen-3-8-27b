@@ -20,10 +20,14 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   - ideas from other P100 forks (CHANGES §21, 10-24): recurrent states cleared with FILL (03bb2a866), `seq_rm` over
     the used cells only (5974d909e), the sampler prefilter with penalties (910d2cfb8), the q4p q4_0-K spill fix
     (c73976485), and the bf16 exchange wire in the start script (`AR_BF16=1`, ef2df6c23). Production runs all of it
-    since 10-24.
+    since 10-24;
+  - the MTP draft's learned stop rule (CHANGES §22, 10-24): `LLAMA_SPEC_STOP_ISO` with its temperature gate
+    (c44158c77), on in the start script (`STOP_ISO=0.125`, a6c045269). Production runs it since 10-24 evening.
 - Production on :8090 is `p100-docs/deploy/start-qwen-vision.sh` (which runs `start-qwen.sh`) from `build-vision`:
   - `-c 262144 -sm tensor`, KV q8_0 K / q4_0 V, `-ub 1024 -b 2048 -np 1`;
-  - MTP drafts n-max 4, p-min 0.2, `LLAMA_SPEC_SAMPLE_TEMP=1.0`, `LLAMA_SPEC_DRAFT_TOPK=20`;
+  - MTP drafts n-max 4, `LLAMA_SPEC_SAMPLE_TEMP=1.0`, `LLAMA_SPEC_DRAFT_TOPK=20`; the draft stops by the lookup rule
+    (`STOP_ISO=0.125`) for thinking-off requests and by p-min 0.2 for thinking ones (target temperature outside
+    0.5-0.9): chat +4.7%, long context +4.8%, exact;
   - `-ctxcp 32 --cache-ram 24576` (48 GB host; on 32 GB `CTXCP=4 CACHE_RAM=8192`);
   - Q8_0 projector on GPU1, `IMAGE_MAX_TOKENS=3600`, `GGML_CUDA_FA_VEC_MAX_Q=16`, `GGML_CUDA_FA_GEMM_MINQ=17`;
   - `--reasoning off` with `LLAMA_THINK_BY_BUDGET=1` and `LLAMA_SAMPLING_BY_MODE=1`: thinking off 0.7 / 0.8 / 20 / 0
@@ -32,12 +36,14 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   - `AR_BF16=1` (`GGML_CUDA_AR_BF16_THRESHOLD=1`): the decode and verify exchanges cross PCIe as bf16 (MTP replies
     +6.8%, KLD +1.1%; `AR_BF16=0` for exact f32);
   - JEV off, API key file, alias `qwen3.8-27b`, `--slot-save-path`, 150 W cap, no `GGML_CUDA_P2P`;
-  - binaries: `build-vision/bin` built 10-24 from c73976485's code (snapshot `/work/bench/forks/exp2`), `400aac811`
-    included;
-  - rollback: copy `/work/bench/think/bin-prod-0d682248f/*` into `build-vision/bin` and restart with `AR_BF16=0`. The
-    bf16 wire off on its own: restart with `AR_BF16=0`;
+  - binaries: `build-vision/bin` built 10-24 from c44158c77's code (snapshot `/work/bench/mtp3/bin-prod-iso`),
+    `400aac811` included;
+  - rollback: the stop rule off on its own: restart with `STOP_ISO=0`. The binaries before it:
+    `/work/bench/forks/exp2/bin/*` (c73976485's code). Back to 10-23's production: copy
+    `/work/bench/think/bin-prod-0d682248f/*` into `build-vision/bin` and restart with `AR_BF16=0 STOP_ISO=0`. The bf16
+    wire off on its own: restart with `AR_BF16=0`;
   - after a reboot the installed Unraid script runs `/work/start-qwen-vision.sh`, which brings all of this back. It
-    passes no env, so a lasting `AR_BF16=0` belongs in `/work/start-qwen.sh`'s default.
+    passes no env, so a lasting `AR_BF16=0` or `STOP_ISO=0` belongs in `/work/start-qwen.sh`'s default.
   - Numbers: README "Measured" (production build and settings, 2026-10-22; decode re-measured 10-24).
 - Contributions back to the base: 12 PRs to Kmic-68/llama.cpp `p100-optimizations`, **#5-#16, still open on 10-24**
   (table in CHANGES §20). Each is a branch `p100/<type>-<name>` cut from d90ec36a3 and validated there (identical

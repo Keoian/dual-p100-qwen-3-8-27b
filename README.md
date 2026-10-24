@@ -75,6 +75,12 @@ all 248k for every sampled token. Presence 1.5 with MTP 40.0 -> 44.7 t/s, identi
 - Kmic's q4_0-K decode attention no longer spills to local memory at 3-4 tokens: -3 to -5% per call, bit-identical
   (production's q8_0-K kernel didn't spill).
 
+**The MTP draft stops by a learned rule (2026-10-24, [CHANGES.md §22](p100-docs/CHANGES.md)):** instead of stopping
+when the draft's top token falls below p 0.2, it stops when the estimated chance that the whole drafted prefix is
+accepted falls below 0.125 (two lookup tables fit on traced verify cycles). Thinking-off chat replies +4.7%, long
+context (32k-200k) +4.8%; the output distribution is unchanged. Thinking requests keep the p-min test: the tables,
+fit at the thinking-off sampling, gained nothing there (`STOP_ISO=0` in the start script turns the rule off).
+
 **Fixes:**
 - a GGML_ASSERT on 9-16-token prompts in Kmic's current tip (*PR*; production's configuration never tripped it, and
   this branch has the fix too since `400aac811`, which production runs since 10-24);

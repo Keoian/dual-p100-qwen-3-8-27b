@@ -747,6 +747,49 @@ cost per exchange fits ~15 us + 0.65 us per KB over GPU1's x4 link, so halving t
 It is lossy: each GPU's partial sums are rounded to bf16 before they are added, and output no longer matches the f32
 wire's for the same seed. Prefill exchanges over 1 MB keep their exact path. `AR_BF16=0` restores exact f32.
 
+## 22. A learned stop rule for the MTP draft (2026-10-24)
+
+The MTP draft used to stop when its top token's probability fell below `--spec-draft-p-min` (0.2). It now stops
+when the estimated chance that the whole drafted prefix is accepted falls below a threshold:
+S(d) = prod_{i<d} iso_q(q_i) * iso_p1(p1_d) < theta (0.125). q_i is the draft's probability of the token it drew at
+step i, p1_d the top probability of step d's distribution. The two maps are isotonic fits of the target's acceptance
+probability min(1, p/q) on the dev split of ~9,600 traced verify cycles. The research is on branch
+`mtp-adaptive-research`, `p100-docs/mtp-research`: traces, cost model, the policies that didn't pay, the fit.
+
+| commit | change |
+|---|---|
+| `c44158c77` | `LLAMA_SPEC_STOP_ISO=<theta>` (default off) and `LLAMA_SPEC_STOP_ISO_TEMP=<lo>,<hi>` (default 0.5,0.9): the rule, for requests whose target temperature lies in the range; the server passes each request's temperature to the draft |
+| `a6c045269` | `start-qwen.sh`: `STOP_ISO=0.125` |
+
+**Exact.** The decision to draft token d uses only step d's distribution and the tokens drafted before it, never the
+token drawn at step d. That is a stopping rule the speculative-sampling proof allows, so the output distribution is
+the target's. It holds for block verification too: a block cut at d verifies like a full-length block whose draft
+emits a token the target never picks after d (h_d = keep_d and the residual is the target, as
+`common_spec_block_verify` computes for any draft length). A rule that looked at the drawn token's own q would be
+biased, which is why the q of step d only enters from step d + 1.
+
+**Where the time comes from.** Production verifies a fixed 5-token-wide batch and skips the columns a short draft
+leaves empty (~4 ms each). The rule drafts 2.70 tokens per cycle instead of 3.84 and loses only 0.11 accepted ones,
+because it drops the tails that would have been rejected.
+
+**Measured** (production's setup, bf16 wire, MTP n-max 4; each arm deterministic, 95% intervals over prompts):
+
+| workload | p-min 0.2 | rule | gain |
+|---|---|---|---|
+| thinking-off chat, 72 prompts, 300-token cap, two rounds | 49.30 t/s | 51.61 | +4.7% (best fixed p-min: +0.3%) |
+| same, the 24 held-out prompts | 49.38 | 53.32 | +8.0% |
+| long context, thinking off, 16 questions each at 32k / 64k / 128k / 200k (saved slots) | 49.28 / 46.54 / 40.07 / 35.20 | 52.54 / 49.45 / 41.17 / 36.32 | +6.6 / +6.2 / +2.8 / +3.2%; all 64: +4.8% (+2.1..+7.4) |
+| thinking on, `reasoning_effort` medium (budget sampler, per-token rule), 24 held-out | 49.11 | 48.70 | -0.8% (-4.7..+1.9) |
+| thinking on, no effort level (block verify), 24 held-out | 48.59 | 49.49 | +1.9% (-1.1..+5.6) |
+
+**Why thinking requests keep p-min.** The tables were fit at the thinking-off sampling (target 0.7 / 0.8 / 20,
+presence 1.5). At the thinking sampling (1.0 / 0.95) the target accepts more of the draft than they predict, so the
+rule stops too early: 2.40 tokens per cycle instead of 3.90, 0.32 accepted tokens lost per cycle. The gate keeps the
+p-min test outside 0.5-0.9: with the rule on, every thinking reply of the checks matched production's token for
+token (48 of 48), and every thinking-off reply matched the ungated rule's (72 of 72).
+
+`STOP_ISO=0` (or `LLAMA_SPEC_STOP_ISO=0`) restores p-min for every request.
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,

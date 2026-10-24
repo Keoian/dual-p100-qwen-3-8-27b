@@ -65,7 +65,7 @@ Expanded from the script with its defaults; argument for argument the command of
 
 ```bash
 LD_LIBRARY_PATH=/work/src/llama.cpp/build-vision/bin \
-GGML_CUDA_AR_BF16_THRESHOLD=1 GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
+GGML_CUDA_AR_BF16_THRESHOLD=1 LLAMA_SPEC_STOP_ISO=0.125 GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
 GGML_CUDA_FA_VEC_MAX_Q=16 GGML_CUDA_FA_GEMM_MINQ=17 \
 LLAMA_THINK_BY_BUDGET=1 LLAMA_SAMPLING_BY_MODE=1 \
 LLAMA_SAMPLING_NOTHINK='{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}' \
@@ -82,7 +82,8 @@ build-vision/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
 ```
 
 `GGML_CUDA_AR_BF16_THRESHOLD=1` (`AR_BF16=1`) sends the decode and verify exchanges as bf16 (MTP replies +6.8%, KLD
-+1.1%; `AR_BF16=0` for exact f32). With `LLAMA_SAMPLING_BY_MODE=1` the chat endpoints take their sampling defaults
++1.1%; `AR_BF16=0` for exact f32). `LLAMA_SPEC_STOP_ISO=0.125` (`STOP_ISO`) stops the MTP draft by the lookup rule
+of CHANGES §22 for thinking-off requests (chat +4.7%, long context +4.8%, exact; `STOP_ISO=0` for p-min only). With `LLAMA_SAMPLING_BY_MODE=1` the chat endpoints take their sampling defaults
 from the two JSON sets; the CLI `--temp/--top-k/--top-p/--min-p` then only serve `/completion`. Why each setting: [QUICKSTART.md](../QUICKSTART.md)
 ("1440p images and a q8_0 K cache", "Switches on this branch").
 
@@ -90,7 +91,7 @@ from the two JSON sets; the CLI `--temp/--top-k/--top-p/--min-p` then only serve
 
 ```bash
 LD_LIBRARY_PATH=/work/src/llama.cpp/build-exp/bin \
-GGML_CUDA_AR_BF16_THRESHOLD=1 GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
+GGML_CUDA_AR_BF16_THRESHOLD=1 LLAMA_SPEC_STOP_ISO=0.125 GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20 \
 LLAMA_THINK_BY_BUDGET=1 LLAMA_SAMPLING_BY_MODE=1 \
 LLAMA_SAMPLING_NOTHINK='{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}' \
 LLAMA_SAMPLING_THINK='{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}' \
@@ -115,7 +116,8 @@ is no P2P with JEV loaded until a supervised test. Env switches of the script: `
 `JEV_KV=q4_0` (smaller decision cache, ~67 MiB/GPU less, KL 3.5e-4 vs f16), `MMDEV=` (projector on the default
 device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `THINK_BY_BUDGET=0` / `SAMPLING_BY_MODE=0` / `NOTHINK_SAMPLING=<json>` / `THINK_SAMPLING=<json>` (CHANGES §19;
 QUICKSTART "Switches on this branch"), `AR_BF16=0` (exact f32 exchanges; an exported
-`GGML_CUDA_AR_BF16_THRESHOLD` wins over it), `ALIAS=`, `API_KEY_FILE=` (no key), `CTX=`, `BUILD=`, `MODEL=`,
+`GGML_CUDA_AR_BF16_THRESHOLD` wins over it), `STOP_ISO=0` (the MTP draft's p-min test for every request; an exported
+`LLAMA_SPEC_STOP_ISO` wins over it), `ALIAS=`, `API_KEY_FILE=` (no key), `CTX=`, `BUILD=`, `MODEL=`,
 `JEV_DIR=`. Why each choice: [QUICKSTART.md](../QUICKSTART.md).
 `start-qwen-vision.sh` (production; copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision`, as in the
 recipe above) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->

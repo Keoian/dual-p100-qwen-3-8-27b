@@ -18,6 +18,7 @@ save/restore", "1440p images and a q8_0 K cache" and "Switches on this branch" b
 | checkpoints / RAM cache | server defaults (32, 8 GiB) | `-ctxcp 32 --cache-ram 24576` | a larger RAM prompt cache on a 48 GB host; on 32 GB use `CTXCP=4 CACHE_RAM=8192` |
 | attention routing | defaults | `GGML_CUDA_FA_VEC_MAX_Q=16 GGML_CUDA_FA_GEMM_MINQ=17` | required with a q8_0 K cache at 262k, else out of memory at depth |
 | exchange wire | f32 | bf16 (`GGML_CUDA_AR_BF16_THRESHOLD=1`, `start-qwen.sh`: `AR_BF16=1`) | MTP replies +6.8% over the x4 link; lossy (KLD +1.1%); `AR_BF16=0` for exact f32 |
+| MTP draft stop | p-min 0.2 | the lookup stop rule (`LLAMA_SPEC_STOP_ISO=0.125`, `start-qwen.sh`: `STOP_ISO`) for thinking-off requests | chat replies +4.7%, long context +4.8%; exact; thinking requests keep p-min; `STOP_ISO=0` for p-min only |
 | thinking | template default (on) | `--reasoning off`, `LLAMA_THINK_BY_BUDGET=1` | chat apps that hide reasoning show nothing while it thinks; a toggle reprocesses 21-42 tokens, not the chat |
 | sampling | 1.0 / 0.95 / 20 / 0 | `LLAMA_SAMPLING_BY_MODE=1`: thinking off 0.7 / 0.8 / 20 / 0 with presence 1.5, thinking 1.0 / 0.95 / 20 / 0 | the model card has a separate thinking-off set |
 | access | :8080, no key | :8090, `--api-key-file`, `--alias qwen3.8-27b`, `--slot-save-path` | OpenAI-compatible clients |
@@ -253,7 +254,7 @@ A/B testing.
 
 ## Switches on this branch (`p100-optimizations-keoian`)
 
-Added by this branch (CHANGES §15, §18, §19, §21). Unset means the default; the kernel and checkpoint switches exist
+Added by this branch (CHANGES §15, §18, §19, §21, §22). Unset means the default; the kernel and checkpoint switches exist
 for A/B tests, the server ones change behaviour. Where `start-qwen.sh` sets one, its own switch is named.
 
 | variable | default | effect |
@@ -278,6 +279,8 @@ for A/B tests, the server ones change behaviour. Where `start-qwen.sh` sets one,
 | `LLAMA_SAMPLING_THINK` | `{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}` (`start-qwen.sh`: `THINK_SAMPLING`) | the thinking set, a JSON object of sampling fields |
 | `LLAMA_SAMPLING_NOTHINK` | `{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}` (`start-qwen.sh`: `NOTHINK_SAMPLING`) | the thinking-off set |
 | `LLAMA_SAMPLER_PREFILTER_PENALTIES` | 1 | with a repetition / frequency / presence penalty active, the sampler's top-k prefilter takes top_k + penalty_last_n candidates (same output; +2.2% with MTP, CHANGES §21); `=0` keeps the whole vocabulary |
+| `LLAMA_SPEC_STOP_ISO` | 0 (off) (`start-qwen.sh`: `STOP_ISO`, 0.125) | `=<theta>`: the MTP draft stops when the estimated chance that the whole drafted prefix is accepted (two lookup tables fit on traced verify cycles) falls below theta, instead of the p-min test (§22). Exact; chat replies +4.7%, long context +4.8% at 0.125 |
+| `LLAMA_SPEC_STOP_ISO_TEMP` | `0.5,0.9` | the target temperatures the stop rule applies to; requests outside keep the p-min test (the tables were fit at the thinking-off 0.7 and gain nothing at the thinking 1.0) |
 
 ## Benchmarking
 
