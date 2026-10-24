@@ -678,12 +678,19 @@ static __global__ void flash_attn_ext_q4p(
 
 #pragma unroll
             for (int k = 0; k < 4; ++k) {
+                // the compiler may keep this loop rolled (its body is large at 3-4 tokens), and w[pt][k] with a
+                // run-time k puts w in local memory (a 32-byte stack frame, 8 LDL per block): select the word instead
+                uint32_t wk[PT];
+#pragma unroll
+                for (int pt = 0; pt < PT; ++pt) {
+                    wk[pt] = k == 0 ? w[pt][0] : k == 1 ? w[pt][1] : k == 2 ? w[pt][2] : w[pt][3];
+                }
 #pragma unroll
                 for (int hh = 0; hh < 2; ++hh) {
                     uint32_t nib[PT];
 #pragma unroll
                     for (int pt = 0; pt < PT; ++pt) {
-                        nib[pt] = (hh ? (w[pt][k] >> 4) : w[pt][k]) & 0x0F0F0F0Fu;
+                        nib[pt] = (hh ? (wk[pt] >> 4) : wk[pt]) & 0x0F0F0F0Fu;
                     }
 #pragma unroll
                     for (int e = 0; e < 4; ++e) {
