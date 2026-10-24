@@ -10,6 +10,10 @@ A `kill -9` loses up to 63 records.
 Code: `tools/server/server-context.cpp` (`server_spec_trace`, `server_spec_trace_cycle`),
 `common/speculative.cpp` (MTP draft loop), `common/speculative.h` (`common_speculative_trace_step`).
 
+`LLAMA_SPEC_TRACE_TOPK=<K>` (default 0) adds the raw logits and penalty window that recomputing the target's
+distribution under another sampling setting needs ([below](#llama_spec_trace_topk-counterfactual-fields)). Unset or 0,
+records are byte-for-byte the format above.
+
 ## Example (values illustrative)
 
 ```json
@@ -114,9 +118,82 @@ stamped once on the server's trace state. Only A0 and A1 are per slot. V and P a
 batch offset 0, where the generating slots' verify rows always sit. This is exact for `-np 1`. With several
 generating slots, every slot's record shows the same D/C/V/P spans.
 
+## LLAMA_SPEC_TRACE_TOPK: counterfactual fields
+
+Added 2026-10-24 on `mtp-adaptive-research` (built, not yet run on a server). With `LLAMA_SPEC_TRACE_TOPK=K`, K > 0
+(clamped to the vocabulary size), every record gets the fields below, so that `analysis/counterfactual.py` can replay
+the target's sampler chain under any `temp`/`top_k`/`top_p`/`min_p`/penalty setting and give
+p_S(x) for each drafted token x, hence the p/q acceptance probability min(1, p_S(x)/q(x)) (q does not depend on the
+target's sampling). The server reads K once, with `LLAMA_SPEC_TRACE`.
+
+```json
+{"task":41, ..., "rule":"dist-pertoken","grammar":true,"grmr":false,"pen_hist":[13,279,3363, ...,11,279],
+ "draft":[...],
+ "teacher":[{"p_draft":0.97,"top1":[279,0.97],"H":0.15,"logit_draft":24.1,"logit_max":24.1,"argmax":279,
+             "raw":[[279,24.0981445],[264,19.5512695], ...],"lse_all":24.1290359},
+            ...,
+            {"p_draft":0,"top1":[248069,1],"H":0,"logit_draft":15.2,"logit_max":21.7,"argmax":13,
+             "raw":[[13,21.6982422], ...],"lse_all":22.0310116,"forced":true}],
+ ...}
+```
+
+Per record (after `grammar`):
+
+| field | type | meaning |
+|---|---|---|
+| `grmr` | bool | the target sampler has a grammar sampler. `grammar` is also true for a reasoning-budget sampler alone (every thinking request with a budget), so `grmr` is the one that says whether a grammar could have constrained a row |
+| `pen_hist` | int[] | the penalty window before this cycle's drafted tokens: the last `penalty_last_n` text tokens of the slot's context up to and including `id_last` (the token at `pos0`), oldest first. Shorter when the context is. Media positions are skipped, as `init_sampler` skips them when it feeds the prompt to the sampler, so these are exactly the tokens the penalty sampler's ring buffer holds before the verify. The window for teacher row `i` is `(pen_hist + draft[0..i-1].id)[-penalty_last_n:]`, the clone having accepted the drafted tokens before row `i`. Present whenever `sampling.penalty_last_n > 0`, **also when the penalty weights are neutral** (presence 0, repeat 1, frequency 0, the thinking-on defaults), so a counterfactual setting can add a penalty with a window up to this long. Absent when `penalty_last_n` is 0 |
+
+Per `teacher[i]` (every row, the bonus row included; after `argmax`):
+
+| field | type | meaning |
+|---|---|---|
+| `raw` | [[id,logit],...] | the K largest **raw** target logits of the row (`llama_get_logits_ith`, the same row `logit_max` scans), before any sampler, in descending order; equal logits in ascending id order (the order the sampler's top-k prefilter keeps). Logits are written with 9 significant digits, so each reads back as the exact float32 |
+| `lse_all` | float | log(Σ_v e^logit_v) over the **whole** raw row (248,320 entries), 9 digits. exp(logit − `lse_all`) is the softmax at T = 1, before penalties. e^x comes from a degree-6 polynomial (relative error < 3e-7 per term, a vectorizable stand-in for `expf`), summed in double: `lse_all` is good to 3e-7 (measured: 4e-9 on a 248,320-entry row). At another temperature Σ_v e^(logit_v/T) does not follow from it, only its top-K part; see below |
+| `forced` | true, optional | present only when the reasoning-budget sampler was forcing its end sequence at this row (its state before the row's sample). The row's distribution is then a point mass on the forced token, which is `top1`, whatever the sampling setting; `raw` still holds the model's logits |
+
+With K > 0 `argmax` and `logit_max` come from the selection instead of the plain scan: the same values (ties: the
+lowest id).
+
+**Size.** About 20 bytes per `raw` entry: K = 128 adds ~2.5 KB per row, so ~12 KB per cycle at n_max 4 and ~22 KB at
+n_max 8 (a 20k-cycle run: 250-450 MB), against ~1.5 KB per record without it.
+
+**Cost.** Per row the selection (one pass with a K-entry heap) and the log-sum-exp pass replace the max scan. Measured
+on a 248,320-float row with this build's flags (-O3, SSE2), while production was serving: selection 0.20-0.23 ms,
+log-sum-exp 0.45 ms, JSON 0.03-0.06 ms (K 64-128), less the 0.24 ms scan: **+0.45 ms per row**, i.e. +2.3 ms per cycle
+at n_max 4 and +4 ms at n_max 8, all inside `trace_us` (an `expf` loop would cost 0.9 ms per row instead of 0.45).
+That is roughly +4% (n_max 4) to +7% (n_max 8) of a 57 ms cycle on top of the trace's own +2.3%: keep timed runs
+without it.
+
+**Choosing K.** The top_k after penalties is exact from the list when at least top_k listed tokens stay above the
+list's smallest logit after the penalties, which K ≥ top_k + (distinct penalized tokens) guarantees. For the card
+settings (top_k 20, presence 1.5 over 64 tokens) K = 84 always suffices; **K = 128** leaves margin for top_k up to 64
+with a 64-token window. `counterfactual.py` checks the condition per row (`info["exact"]`).
+
+**What a setting may change offline.** `temp`, `top_k`, `top_p`, `min_p`, `min_keep`, `penalty_present`,
+`penalty_repeat`, `penalty_freq`, and `penalty_last_n` up to the recorded one (longer only while the whole context fits
+in `pen_hist`), in the default sampler order or another (`samplers`). With `top_k` ≤ 0 the whole-vocabulary softmaxes
+take the tokens outside the list from `lse_all`: exact at T = 1, which covers top_p and min_p in the default order
+(they run before temperature); dist normalizing the whole vocabulary at T ≠ 1 (top_k ≤ 0, top_p ≥ 1, min_p ≤ 0) is
+an estimate. Not replayable, and not recorded: logit biases (`ignore_eos` is one; so are a vocabulary's suppress tokens,
+which also turn the prefilter off), dry, top_n_sigma, typical, xtc, dynatemp, mirostat, a grammar. The record's
+`sampling` object does not hold `min_keep` or the sampler order; the suite's requests use the defaults (0, the default
+order).
+
+**Check.** `python3 analysis/counterfactual.py selfcheck <trace.jsonl>` recomputes `p_draft` at each row's own sampling
+for every row of a cycle without `grmr` and prints the max and 99th-percentile error and the fraction above 1e-4.
+`p_draft` is written with 6 digits, so the floor is ~5e-7. Before any such trace existed, its chain was checked against
+this fork's C++ samplers (`llama_sampler_init_penalties/top_k/top_p/min_p/temp_ext/dist` from `libllama`, CPU only, as
+`common_sampler_init` chains them) on 400 random 3,000-token rows and settings (temp 0-1.3, top_k 0-40, top_p,
+min_p, min_keep, presence/repeat/frequency over 0-64 tokens): identical candidate sets, max |Δp| 1.5e-8, and the same
+from the top 128 plus `lse_all` on the 364 rows it flagged exact. The prefilter's subset gave the same p as the whole
+vocabulary in every case.
+
 ## Not recorded
 
 - A cycle that restores a speculative checkpoint (FULL rollback) returns before the accept, so it writes no record.
   Its replay cycle is recorded with `rule: "replay"`. This path is unreachable for qwen35.
 - Draft-side `||h||` or cos(h, h_prev) (optional in RECONNAISSANCE §6) are not recorded.
 - Cycles of non-MTP draft types produce records, but with an empty `draft` array (only the MTP draft fills it).
+- Without `LLAMA_SPEC_TRACE_TOPK`: raw logits other than `logit_draft`/`logit_max`, the penalty window, the reasoning
+  budget's forcing state, and whether `grammar` means a grammar sampler or only a reasoning budget.

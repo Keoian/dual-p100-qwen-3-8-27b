@@ -30,6 +30,7 @@ static inline void tl_mark(const char * tag) {
 #include <cmath>
 #include <cstddef>
 #include <cinttypes>
+#include <cstring>
 #include <exception>
 #include <memory>
 #include <filesystem>
@@ -115,6 +116,11 @@ static std::vector<llama_token> server_sample_and_accept_synth(
 // nothing else changes. Set, it costs a sampler call and a full-vocabulary logit scan per verified position (an
 // estimated 0.5-1 ms a cycle at n_max 4, reported as trace_us), so keep it out of timed runs. Records are buffered,
 // and flushed every 64, at slot release and at exit.
+// LLAMA_SPEC_TRACE_TOPK=<k> > 0 (default 0: records unchanged) adds what recomputing the target's distribution under
+// another sampling setting needs: per verify row the k largest raw logits, the log-sum-exp over the whole raw row and
+// whether the reasoning budget was forcing; per cycle the penalty window and whether a grammar sampler exists. Per row
+// a selection pass and a log-sum-exp pass replace the max scan: about 0.45 ms more per row on 248k logits at k = 128
+// (selection 0.2, log-sum-exp 0.45, JSON 0.06, less the 0.24 ms scan), so 2-4 ms a cycle at n_max 4-8.
 //
 
 // the target at one verify row, from the teacher-forced clone
@@ -128,7 +134,100 @@ struct server_spec_trace_pos {
     llama_token argmax;       // raw logits: the argmax, the max and the drafted token's
     float       logit_max;
     float       logit_draft;
+
+    // LLAMA_SPEC_TRACE_TOPK > 0 only
+    bool        forced;       // the reasoning budget sampler was forcing its end sequence at this row
+    double      lse_all;      // log-sum-exp over the whole raw logit row
+    size_t      raw0;         // the row's top-k raw logits: server_spec_trace_cycle::raw[raw0, raw0 + n_raw)
+    int32_t     n_raw;
 };
+
+// LLAMA_SPEC_TRACE_TOPK: append the k largest of logits[0, n) to out as (logit, id), descending, equal logits in
+// ascending id order (the order the sampler's top-k prefilter keeps). One pass against a k-entry heap whose front is
+// the smallest kept logit; past the first few thousand entries it rarely gets beyond the compare.
+static void server_spec_trace_top_k(const float * logits, int32_t n, int32_t k, std::vector<std::pair<float, llama_token>> & out) {
+    const auto better = [](const std::pair<float, llama_token> & a, const std::pair<float, llama_token> & b) {
+        return a.first > b.first || (a.first == b.first && a.second < b.second);
+    };
+
+    const size_t i0 = out.size();
+    for (int32_t i = 0; i < k; ++i) {
+        out.emplace_back(logits[i], i);
+    }
+    const auto beg = out.begin() + i0;
+    std::make_heap(beg, out.end(), better);
+
+    float thr = beg->first;
+    for (int32_t i = k; i < n; ++i) {
+        if (logits[i] > thr) {
+            std::pop_heap(beg, out.end(), better);
+            out.back() = { logits[i], i };
+            std::push_heap(beg, out.end(), better);
+            thr = beg->first;
+        }
+    }
+    std::sort_heap(beg, out.end(), better);
+}
+
+// e^x for x <= 0, relative error < 3e-7, 0 below e^-88. Unlike expf (without -ffast-math) this vectorizes: the
+// log-sum-exp below takes 0.4 ms instead of 0.9 ms on a 248,320-entry row at this build's -O3. x = n ln 2 + r with
+// |r| <= ln(2)/2 (ln 2 in two parts), e^r by its degree-6 Taylor polynomial, 2^n from the exponent bits
+static inline float server_spec_trace_exp(float x) {
+    // x = -min(|x|, 104) on the bits (a float compare would not vectorize): -inf and NaN land in range too, so the
+    // float -> int conversion below is defined for every input. NaN gives 0
+    uint32_t b;
+    memcpy(&b, &x, sizeof(b));
+    b &= 0x7fffffffu;
+    b  = (b < 0x42d00000u ? b : 0x42d00000u) | 0x80000000u;
+    memcpy(&x, &b, sizeof(x));
+
+    int32_t n = (int32_t) (x*1.44269504f - 0.5f); // round(x/ln 2)
+    n = n > -127 ? n : -127;                       // 2^-127: the scale below is +0
+    const float fn = (float) n;
+    const float r  = x - fn*0.693145751953125f - fn*1.428606765330187e-06f;
+    float p = 1.0f/720.0f;
+    p = p*r + 1.0f/120.0f;
+    p = p*r + 1.0f/24.0f;
+    p = p*r + 1.0f/6.0f;
+    p = p*r + 0.5f;
+    p = p*r + 1.0f;
+    p = p*r + 1.0f;
+    const int32_t e = (n + 127) << 23;
+    float s;
+    memcpy(&s, &e, sizeof(s));
+    return p*s;
+}
+
+// LLAMA_SPEC_TRACE_TOPK: log(sum_i e^logits[i]) over logits[0, n), given their max
+static double server_spec_trace_lse(const float * logits, int32_t n, float max) {
+    if (!std::isfinite(max)) {
+        return max;
+    }
+    double sum = 0.0;
+    constexpr int32_t B = 512;
+    float e[B];
+    for (int32_t i0 = 0; i0 < n; i0 += B) {
+        const int32_t m = std::min(B, n - i0);
+        for (int32_t j = 0; j < m; ++j) {
+            e[j] = server_spec_trace_exp(logits[i0 + j] - max);
+        }
+        // 8 partial sums: an in-order sum does not vectorize either
+        float acc[8] = {};
+        int32_t j = 0;
+        for (; j + 8 <= m; j += 8) {
+            for (int32_t l = 0; l < 8; ++l) {
+                acc[l] += e[j + l];
+            }
+        }
+        for (; j < m; ++j) {
+            acc[0] += e[j];
+        }
+        for (int32_t l = 0; l < 8; ++l) {
+            sum += acc[l];
+        }
+    }
+    return max + std::log(sum);
+}
 
 // one verify cycle of one slot, written after the accept
 struct server_spec_trace_cycle {
@@ -147,6 +246,30 @@ struct server_spec_trace_cycle {
     int64_t t_a1_prev  = 0; // the previous cycle's t_a1 in this task (0: none)
     int64_t t_teacher  = 0; // the teacher pass, inside the accept span
 
+    // LLAMA_SPEC_TRACE_TOPK (0: off): the teacher rows' top-k raw logits as (logit, id), each row's descending; the
+    // penalty window before this cycle's drafted tokens; whether there is a grammar sampler (grammar also counts the
+    // reasoning budget)
+    int32_t                                    topk = 0;
+    std::vector<std::pair<float, llama_token>> raw;
+    llama_tokens                               pen_hist;
+    bool                                       grmr = false;
+
+    // the penalty window: the last n text tokens of the slot's context up to and including id_last (index
+    // n_ctx_used), oldest first. These are the tokens the penalty sampler's ring buffer holds before the verify:
+    // init_sampler accepts the prompt's text tokens (media positions are LLAMA_TOKEN_NULL and skipped), and every
+    // committed token is accepted after it
+    // server_tokens, not get_tokens(): that asserts !has_mtmd, and media positions read as LLAMA_TOKEN_NULL here
+    void penalty_window(server_tokens & tokens, int32_t n) {
+        pen_hist.clear();
+        for (int32_t k = std::min(n_ctx_used, (int32_t) tokens.size() - 1); k >= 0 && (int32_t) pen_hist.size() < n; --k) {
+            const llama_token t = tokens[k];
+            if (t != LLAMA_TOKEN_NULL) {
+                pen_hist.push_back(t);
+            }
+        }
+        std::reverse(pen_hist.begin(), pen_hist.end());
+    }
+
     // the target's distribution at verify rows 0..n_real (n_real: the bonus position) from a clone of the
     // pre-verify sampler, accepting each drafted token into the clone: the real sampler and its RNG are not
     // touched. common_sampler_sample also draws a token, from the clone's own copy of the RNG: the chain's
@@ -160,12 +283,21 @@ struct server_spec_trace_cycle {
         grammar = common_sampler_has_grammar(smpl_save);
         teacher.clear();
 
+        const int32_t k_raw = std::min(topk, n_vocab);
+        raw.clear();
+        if (k_raw > 0) {
+            grmr = common_sampler_has_grammar_sampler(smpl_save);
+            raw.reserve((size_t) (n_real + 1)*k_raw);
+        }
+
         common_sampler_ptr smpl(common_sampler_clone(smpl_save));
         try {
             for (int32_t i = 0; i <= n_real; ++i) {
                 server_spec_trace_pos t = {};
                 t.tok  = i < n_real ? draft_ids[i] : LLAMA_TOKEN_NULL;
                 t.top1 = LLAMA_TOKEN_NULL;
+                // the state the sample below starts from (accept moves it)
+                t.forced = k_raw > 0 && common_sampler_reasoning_budget_forcing(smpl.get());
 
                 common_sampler_sample(smpl.get(), ctx, i_batch[i]);
                 const auto * cur_p = common_sampler_get_candidates(smpl.get(), false);
@@ -187,7 +319,16 @@ struct server_spec_trace_cycle {
 
                 const float * logits = llama_get_logits_ith(ctx, i_batch[i]);
                 t.has_logits = logits != nullptr;
-                if (logits) {
+                if (logits && k_raw > 0) {
+                    // the selection's first entry is the plain scan's argmax and max (ties: the lowest id)
+                    t.raw0  = raw.size();
+                    t.n_raw = k_raw;
+                    server_spec_trace_top_k(logits, n_vocab, k_raw, raw);
+                    t.argmax    = raw[t.raw0].second;
+                    t.logit_max = raw[t.raw0].first;
+                    t.lse_all   = server_spec_trace_lse(logits, n_vocab, t.logit_max);
+                    t.logit_draft = t.tok != LLAMA_TOKEN_NULL ? logits[t.tok] : 0.0f;
+                } else if (logits) {
                     t.argmax    = 0;
                     t.logit_max = logits[0];
                     for (int32_t k = 1; k < n_vocab; ++k) {
@@ -216,6 +357,7 @@ struct server_spec_trace_cycle {
 struct server_spec_trace {
     FILE * f = nullptr;
     float  draft_temp  = 0.0f; // LLAMA_SPEC_SAMPLE_TEMP, as the MTP draft reads it
+    int    topk        = 0;    // LLAMA_SPEC_TRACE_TOPK: raw logits per teacher row (0: off)
     int    n_unflushed = 0;
 
     std::vector<char> buf;
@@ -251,6 +393,12 @@ struct server_spec_trace {
         draft_temp = s ? (float) atof(s) : 0.0f;
 
         SRV_WRN("LLAMA_SPEC_TRACE = %s\n", path);
+
+        const char * k = getenv("LLAMA_SPEC_TRACE_TOPK");
+        topk = k ? std::max(0, atoi(k)) : 0;
+        if (topk > 0) {
+            SRV_WRN("LLAMA_SPEC_TRACE_TOPK = %d\n", topk);
+        }
     }
 
     void flush() {
@@ -278,6 +426,15 @@ struct server_spec_trace {
             }
         };
         const auto inum = [&](long long v) { s += std::to_string(v); };
+        // raw logits and their log-sum-exp: 9 digits, so a float reads back exactly
+        const auto numx = [&](double v) {
+            if (std::isfinite(v)) {
+                snprintf(tmp, sizeof(tmp), "%.9g", v);
+                s += tmp;
+            } else {
+                s += "null";
+            }
+        };
         const auto kv   = [&](const char * k, double v)    { key(k); num(v);  s += ','; };
         const auto kvi  = [&](const char * k, long long v) { key(k); inum(v); s += ','; };
         const auto pair = [&](llama_token id, float p) { s += '['; inum(id); s += ','; num(p); s += ']'; };
@@ -306,6 +463,17 @@ struct server_spec_trace {
         kv("draft_temp", draft_temp);
         key("rule"); s += '"'; s += c.rule; s += "\",";
         key("grammar"); s += c.grammar ? "true," : "false,";
+        if (c.topk > 0) {
+            key("grmr"); s += c.grmr ? "true," : "false,";
+            if (sp.penalty_last_n > 0) {
+                key("pen_hist"); s += '[';
+                for (const llama_token id : c.pen_hist) {
+                    inum(id);
+                    s += ',';
+                }
+                end(']'); s += ',';
+            }
+        }
 
         // the real drafted steps, then the step that stopped drafting if its token was not added
         key("draft"); s += '[';
@@ -348,6 +516,18 @@ struct server_spec_trace {
                 }
                 kv ("logit_max", t.logit_max);
                 kvi("argmax", t.argmax);
+                if (t.n_raw > 0) {
+                    key("raw"); s += '[';
+                    for (int32_t k = 0; k < t.n_raw; ++k) {
+                        const auto & r = c.raw[t.raw0 + k];
+                        s += '['; inum(r.second); s += ','; numx(r.first); s += "],";
+                    }
+                    end(']'); s += ',';
+                    key("lse_all"); numx(t.lse_all); s += ',';
+                }
+            }
+            if (t.forced) {
+                key("forced"); s += "true,";
             }
             end('}'); s += ',';
         }
@@ -389,6 +569,8 @@ struct server_spec_trace {
         c.t_a1_prev = c.t_a1;
         c.draft.clear();
         c.teacher.clear();
+        c.raw.clear();
+        c.pen_hist.clear();
     }
 };
 
@@ -4710,6 +4892,10 @@ private:
                     trc.n_real     = (int32_t) n_real_draft;
                     trc.pos0       = slot.prompt.tokens.pos_next() - (llama_pos) n_draft - 1;
                     trc.n_ctx_used = (int32_t) slot.prompt.n_tokens() - (int32_t) n_draft - 1;
+                    trc.topk       = slot.spec_trace->topk;
+                    if (trc.topk > 0 && slot.task->params.sampling.penalty_last_n > 0) {
+                        trc.penalty_window(slot.prompt.tokens, slot.task->params.sampling.penalty_last_n);
+                    }
                     trc.verify(smpl_save.get(), slot.ctx_tgt, slot.spec_draft, slot.spec_i_batch);
                 }
 

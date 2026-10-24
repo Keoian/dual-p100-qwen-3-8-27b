@@ -119,6 +119,13 @@ uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl);
 // force the reasoning budget sampler (if any) to begin forcing its end sequence now.
 bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl);
 
+// whether the sampler has a grammar sampler (common_sampler_has_grammar also counts the reasoning budget)
+bool common_sampler_has_grammar_sampler(const struct common_sampler * gsmpl);
+
+// whether the reasoning budget sampler (if any) is forcing its end sequence: the next sample is that sequence's next
+// token, whatever the logits
+bool common_sampler_reasoning_budget_forcing(const struct common_sampler * gsmpl);
+
 // helpers
 
 // access the internal list of current candidate tokens
