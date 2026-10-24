@@ -27,6 +27,7 @@ static inline void tl_mark(const char * tag) {
 #include "mtmd-helper.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cinttypes>
 #include <exception>
@@ -104,6 +105,292 @@ static std::vector<llama_token> server_sample_and_accept_synth(
 
     return result;
 }
+
+//
+// LLAMA_SPEC_TRACE=<path>: one JSON line per speculative verify cycle, appended to <path>. For each drafted step,
+// what the draft saw (its token, q, top candidates, entropy, why drafting stopped). For each verified position, the
+// target's distribution, teacher-forced along the drafted tokens on a clone of the pre-verify sampler, so the
+// positions past the first rejection are labelled too. Then the committed tokens and the host time of each phase.
+// For studying draft and acceptance policies offline. Unset (the default), each hook is one untaken branch and
+// nothing else changes. Set, it costs a sampler call and a full-vocabulary logit scan per verified position (an
+// estimated 0.5-1 ms a cycle at n_max 4, reported as trace_us), so keep it out of timed runs. Records are buffered,
+// and flushed every 64, at slot release and at exit.
+//
+
+// the target at one verify row, from the teacher-forced clone
+struct server_spec_trace_pos {
+    llama_token tok;          // the drafted token this row predicts (LLAMA_TOKEN_NULL: the bonus row)
+    float       p_draft;      // its p among the target's candidates, 0 if not among them
+    llama_token top1;         // the target's most likely candidate, and its p
+    float       p_top1;
+    float       H;            // entropy (nats) of the target's candidates
+    bool        has_logits;
+    llama_token argmax;       // raw logits: the argmax, the max and the drafted token's
+    float       logit_max;
+    float       logit_draft;
+};
+
+// one verify cycle of one slot, written after the accept
+struct server_spec_trace_cycle {
+    std::vector<common_speculative_trace_step> draft;   // filled by the draft (common_speculative_draft_params::trace)
+    std::vector<server_spec_trace_pos>         teacher; // verify rows 0..n_real
+
+    const char * rule       = "";
+    bool         replay     = false; // replayed tokens, not drafted in this cycle
+    bool         grammar    = false;
+    int32_t      n_draft    = 0; // the verified draft, padding included
+    int32_t      n_real     = 0;
+    llama_pos    pos0       = 0; // position of id_last, the first verify row
+    int32_t      n_ctx_used = 0;
+
+    int64_t t_a0 = 0, t_a1 = 0;
+    int64_t t_a1_prev  = 0; // the previous cycle's t_a1 in this task (0: none)
+    int64_t t_teacher  = 0; // the teacher pass, inside the accept span
+
+    // the target's distribution at verify rows 0..n_real (n_real: the bonus position) from a clone of the
+    // pre-verify sampler, accepting each drafted token into the clone: the real sampler and its RNG are not
+    // touched. common_sampler_sample also draws a token, from the clone's own copy of the RNG: the chain's
+    // dist sampler normalizes p and draws in one pass, and there is no call that does only the first. With
+    // the top-k prefilter (prefilter_k in sampling.cpp) the candidates are the top-k after penalties, not
+    // the whole vocabulary: that is the target's real sampling distribution, the one the verify tests.
+    void verify(common_sampler * smpl_save, llama_context * ctx, const llama_tokens & draft_ids, const std::vector<int32_t> & i_batch) {
+        const int64_t t_start = ggml_time_us();
+        const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx)));
+
+        grammar = common_sampler_has_grammar(smpl_save);
+        teacher.clear();
+
+        common_sampler_ptr smpl(common_sampler_clone(smpl_save));
+        try {
+            for (int32_t i = 0; i <= n_real; ++i) {
+                server_spec_trace_pos t = {};
+                t.tok  = i < n_real ? draft_ids[i] : LLAMA_TOKEN_NULL;
+                t.top1 = LLAMA_TOKEN_NULL;
+
+                common_sampler_sample(smpl.get(), ctx, i_batch[i]);
+                const auto * cur_p = common_sampler_get_candidates(smpl.get(), false);
+                double H = 0.0;
+                for (size_t k = 0; k < cur_p->size; ++k) {
+                    const auto & c = cur_p->data[k];
+                    if (c.id == t.tok) {
+                        t.p_draft = c.p;
+                    }
+                    if (t.top1 == LLAMA_TOKEN_NULL || c.p > t.p_top1) {
+                        t.top1   = c.id;
+                        t.p_top1 = c.p;
+                    }
+                    if (c.p > 0.0f) {
+                        H -= (double) c.p*std::log((double) c.p);
+                    }
+                }
+                t.H = (float) H;
+
+                const float * logits = llama_get_logits_ith(ctx, i_batch[i]);
+                t.has_logits = logits != nullptr;
+                if (logits) {
+                    t.argmax    = 0;
+                    t.logit_max = logits[0];
+                    for (int32_t k = 1; k < n_vocab; ++k) {
+                        if (logits[k] > t.logit_max) {
+                            t.argmax    = k;
+                            t.logit_max = logits[k];
+                        }
+                    }
+                    t.logit_draft = t.tok != LLAMA_TOKEN_NULL ? logits[t.tok] : 0.0f;
+                }
+                teacher.push_back(t);
+
+                if (i < n_real) {
+                    common_sampler_accept(smpl.get(), t.tok, true);
+                }
+            }
+        } catch (const std::exception &) {
+            // the grammar rejected a drafted token: no teacher past it
+        }
+
+        t_teacher = ggml_time_us() - t_start;
+    }
+};
+
+// the trace file, and the phase marks of the batch: one draft call and one verify decode serve every slot in it
+struct server_spec_trace {
+    FILE * f = nullptr;
+    float  draft_temp  = 0.0f; // LLAMA_SPEC_SAMPLE_TEMP, as the MTP draft reads it
+    int    n_unflushed = 0;
+
+    std::vector<char> buf;
+    std::string       line;
+
+    // host us at the tl_mark sites: draft (D0/D1), padding and checkpoints (C0/C1), verify enqueue, return and
+    // sync (V0/V1/V2), MTP catch-up (P0/P1)
+    int64_t t_d0 = 0, t_d1 = 0, t_c0 = 0, t_c1 = 0, t_v0 = 0, t_v1 = 0, t_v2 = 0, t_p0 = 0, t_p1 = 0;
+
+    server_spec_trace() = default;
+    server_spec_trace(const server_spec_trace &) = delete;
+    server_spec_trace & operator=(const server_spec_trace &) = delete;
+
+    ~server_spec_trace() {
+        if (f) {
+            fclose(f);
+        }
+    }
+
+    void open(const char * path) {
+        if (!path || !*path) {
+            return;
+        }
+        f = fopen(path, "a");
+        if (!f) {
+            SRV_WRN("LLAMA_SPEC_TRACE: failed to open '%s'\n", path);
+            return;
+        }
+        buf.resize(1 << 20);
+        setvbuf(f, buf.data(), _IOFBF, buf.size());
+
+        const char * s = getenv("LLAMA_SPEC_SAMPLE_TEMP");
+        draft_temp = s ? (float) atof(s) : 0.0f;
+
+        SRV_WRN("LLAMA_SPEC_TRACE = %s\n", path);
+    }
+
+    void flush() {
+        if (f && n_unflushed > 0) {
+            fflush(f);
+            n_unflushed = 0;
+        }
+    }
+
+    // ids: the tokens the cycle committed
+    void write(server_spec_trace_cycle & c, int id_task, int id_slot, const common_params_sampling & sp, const llama_tokens & ids) {
+        c.t_a1 = ggml_time_us();
+
+        std::string & s = line;
+        s.clear();
+
+        char tmp[64];
+        const auto key = [&](const char * k) { s += '"'; s += k; s += "\":"; };
+        const auto num = [&](double v) {
+            if (std::isfinite(v)) {
+                snprintf(tmp, sizeof(tmp), "%.6g", v);
+                s += tmp;
+            } else {
+                s += "null";
+            }
+        };
+        const auto inum = [&](long long v) { s += std::to_string(v); };
+        const auto kv   = [&](const char * k, double v)    { key(k); num(v);  s += ','; };
+        const auto kvi  = [&](const char * k, long long v) { key(k); inum(v); s += ','; };
+        const auto pair = [&](llama_token id, float p) { s += '['; inum(id); s += ','; num(p); s += ']'; };
+        const auto end  = [&](char bracket) { if (s.back() == ',') { s.back() = bracket; } else { s += bracket; } };
+
+        s += '{';
+        kvi("task", id_task);
+        kvi("slot", id_slot);
+        kvi("t_us", c.t_a1);
+        kvi("pos0", c.pos0);
+        kvi("n_ctx_used", c.n_ctx_used);
+        kvi("n_draft_padded", c.n_draft);
+        kvi("n_real", c.n_real);
+
+        key("sampling"); s += '{';
+        kv ("temp", sp.temp);
+        kvi("top_k", sp.top_k);
+        kv ("top_p", sp.top_p);
+        kv ("min_p", sp.min_p);
+        kv ("penalty_present", sp.penalty_present);
+        kv ("penalty_repeat", sp.penalty_repeat);
+        kv ("penalty_freq", sp.penalty_freq);
+        kvi("penalty_last_n", sp.penalty_last_n);
+        end('}'); s += ',';
+
+        kv("draft_temp", draft_temp);
+        key("rule"); s += '"'; s += c.rule; s += "\",";
+        key("grammar"); s += c.grammar ? "true," : "false,";
+
+        // the real drafted steps, then the step that stopped drafting if its token was not added
+        key("draft"); s += '[';
+        const size_t n_steps = c.replay ? 0 : std::min(c.draft.size(), (size_t) c.n_real + 1);
+        for (size_t i = 0; i < n_steps; ++i) {
+            const auto & d = c.draft[i];
+            s += '{';
+            kvi("id", d.id);
+            kv ("q", d.q);
+            key("top"); s += '[';
+            for (int32_t k = 0; k < d.n_top; ++k) {
+                pair(d.top_id[k], d.top_p[k]);
+                s += ',';
+            }
+            end(']'); s += ',';
+            kv("H", d.H);
+            if (d.stop) {
+                key("stop"); s += '"'; s += d.stop; s += "\",";
+                kv("thr", d.stop_thr);
+            } else if (i == (size_t) c.n_real) {
+                // drafted, then cut: --spec-draft-n-min, or the remaining context
+                key("stop"); s += "\"cut\",";
+            }
+            end('}'); s += ',';
+        }
+        end(']'); s += ',';
+
+        // verify rows 0..n_real; the last is the bonus position and has no drafted token
+        key("teacher"); s += '[';
+        for (const auto & t : c.teacher) {
+            s += '{';
+            if (t.tok != LLAMA_TOKEN_NULL) {
+                kv("p_draft", t.p_draft);
+            }
+            key("top1"); pair(t.top1, t.p_top1); s += ',';
+            kv("H", t.H);
+            if (t.has_logits) {
+                if (t.tok != LLAMA_TOKEN_NULL) {
+                    kv("logit_draft", t.logit_draft);
+                }
+                kv ("logit_max", t.logit_max);
+                kvi("argmax", t.argmax);
+            }
+            end('}'); s += ',';
+        }
+        end(']'); s += ',';
+
+        kvi("n_accepted", (long long) ids.size() - 1);
+        key("emitted"); s += '[';
+        for (const llama_token id : ids) {
+            inum(id);
+            s += ',';
+        }
+        end(']'); s += ',';
+
+        // the draft marks belong to this cycle only if the draft ran after the previous cycle ended
+        const bool    drafted = !c.replay && t_d0 > c.t_a1_prev;
+        const int64_t t_start = drafted ? t_d0 : t_c0;
+        key("timing"); s += '{';
+        if (drafted) {
+            kvi("draft_us", t_d1 - t_d0);
+        }
+        kvi("pad_us", t_c1 - t_c0);
+        kvi("verify_us", t_v2 - t_v0);
+        kvi("verify_enqueue_us", t_v1 - t_v0);
+        kvi("catchup_us", t_p1 - t_p0);
+        kvi("accept_us", c.t_a1 - c.t_a0 - c.t_teacher);
+        kvi("trace_us", c.t_teacher);
+        kvi("cycle_us", c.t_a1 - t_start);
+        if (c.t_a1_prev > 0) {
+            kvi("gap_us", t_start - c.t_a1_prev);
+        }
+        end('}');
+        s += "}\n";
+
+        fputs(s.c_str(), f);
+        if (++n_unflushed >= 64) {
+            flush();
+        }
+
+        c.t_a1_prev = c.t_a1;
+        c.draft.clear();
+        c.teacher.clear();
+    }
+};
 
 // state diagram: https://github.com/ggml-org/llama.cpp/pull/9283
 enum slot_state {
@@ -283,6 +570,10 @@ struct server_slot {
     std::mt19937 spec_synth_rng;
     std::mt19937 spec_dist_rng;
     bool spec_replay_forced = false; // the replayed tokens came from the speculative-sampling rule
+
+    // LLAMA_SPEC_TRACE: the trace file (nullptr: off) and this slot's current cycle
+    server_spec_trace *     spec_trace = nullptr;
+    server_spec_trace_cycle spec_trc;
 
     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
@@ -591,6 +882,11 @@ struct server_slot {
             SLT_INF(*this, "stop processing: n_tokens = %d, truncated = %d\n", prompt.n_tokens(), truncated);
 
             t_last_used = ggml_time_us();
+
+            if (spec_trace) {
+                spec_trace->flush();
+                spec_trc.t_a1_prev = 0;
+            }
 
             state = SLOT_STATE_IDLE;
 
@@ -934,6 +1230,7 @@ private:
     common_speculative_init_result_ptr spec_init;
     bool spec_pad = false; // verify at a fixed width, padding short drafts
     bool spec_reads_prompt = true; // a draft type reads the prompt tokens when drafting
+    server_spec_trace spec_trace;  // env: LLAMA_SPEC_TRACE
 
     common_context_seq_rm_type ctx_tgt_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
@@ -1474,6 +1771,11 @@ private:
 
         if (spec) {
             SRV_TRC("%s", "speculative decoding context initialized\n");
+
+            // LLAMA_SPEC_TRACE=<path>: one JSON line per verify cycle (server_spec_trace), off when unset
+            if (!spec_trace.f) {
+                spec_trace.open(getenv("LLAMA_SPEC_TRACE"));
+            }
         } else {
             spec_init.reset();
             ctx_dft   = nullptr;
@@ -1494,6 +1796,8 @@ private:
             slot.mem.init(ctx_tgt, ctx_dft);
             slot.spec    = spec.get();
             slot.n_ctx   = n_ctx_slot();
+
+            slot.spec_trace = spec && spec_trace.f ? &spec_trace : nullptr;
 
             slot.mctx                   = mctx;
             slot.prompt.tokens.has_mtmd = mctx != nullptr;
@@ -3399,6 +3703,9 @@ private:
                             /* .prompt   = */ &slot.spec_prompt,
                             /* .result   = */ &slot.spec_draft,
                         };
+                        if (slot.spec_trace) {
+                            common_speculative_get_draft_params(spec.get(), slot.id).trace = &slot.spec_trc.draft;
+                        }
 
                         drafting.push_back(&slot);
                     }
@@ -3409,14 +3716,23 @@ private:
         // generate the actual drafts (if any)
         if (!drafting.empty()) {
             tl_mark("D0");
+            if (spec_trace.f) {
+                spec_trace.t_d0 = ggml_time_us();
+            }
             queue_tasks.yield_to_queue([&]() {
                 common_speculative_draft(spec.get());
             });
             tl_mark("D1");
+            if (spec_trace.f) {
+                spec_trace.t_d1 = ggml_time_us();
+            }
         }
 
         // make checkpoints if needed
         tl_mark("C0");
+        if (spec_trace.f) {
+            spec_trace.t_c0 = ggml_time_us();
+        }
         iterate(drafting, [&](server_slot & slot) {
             auto & draft = slot.spec_draft;
             auto & ckpt  = slot.spec_ckpt;
@@ -3477,6 +3793,9 @@ private:
         });
 
         tl_mark("C1");
+        if (spec_trace.f) {
+            spec_trace.t_c1 = ggml_time_us();
+        }
         // update the batch with the sampled/drafted tokens
         iterate(generating, [&](server_slot & slot) {
             slot.handle_last_sampled_token(batch);
@@ -4069,7 +4388,12 @@ private:
         // note: the sync is done here too, so that the wait is also covered by the yield
         int ret = 0;
         const bool padded = batch.n_active > 0 && batch_view.n_tokens == batch.n_active_full && off == 0;
+        // LLAMA_SPEC_TRACE: the generating slots' tokens open the batch, so a verify is in the chunk at off 0
+        const bool trace_verify = spec_trace.f && off == 0;
         tl_mark("V0");
+        if (trace_verify) {
+            spec_trace.t_v0 = ggml_time_us();
+        }
         queue_tasks.yield_to_queue([&]() {
             if (padded) {
                 llama_set_n_active_tokens(ctx_tgt, batch.n_active);
@@ -4079,6 +4403,9 @@ private:
             }
             ret = llama_decode(ctx_tgt, batch_view);
             tl_mark("V1");
+            if (trace_verify) {
+                spec_trace.t_v1 = ggml_time_us();
+            }
             if (padded) {
                 llama_set_n_active_tokens(ctx_tgt, 0);
             }
@@ -4086,6 +4413,9 @@ private:
                 llama_synchronize(ctx_tgt);
             }
             tl_mark("V2");
+            if (trace_verify) {
+                spec_trace.t_v2 = ggml_time_us();
+            }
         });
 
         if (ret != 0) {
@@ -4147,10 +4477,16 @@ private:
         if (spec) {
             bool ok = true;
             tl_mark("P0");
+            if (trace_verify) {
+                spec_trace.t_p0 = ggml_time_us();
+            }
             queue_tasks.yield_to_queue([&]() {
                 ok = common_speculative_process(spec.get(), batch_view);
             });
             tl_mark("P1");
+            if (trace_verify) {
+                spec_trace.t_p1 = ggml_time_us();
+            }
 
             if (!ok) {
                 SRV_ERR("%s", "failed to process speculative batch\n");
@@ -4309,6 +4645,9 @@ private:
             // save the original draft size
             const size_t n_draft = slot.spec_draft.size();
             tl_mark("A0");
+            if (slot.spec_trace) {
+                slot.spec_trc.t_a0 = ggml_time_us();
+            }
 
             GGML_ASSERT(n_draft > 0);
 
@@ -4351,6 +4690,28 @@ private:
                                 slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
                                 synth_probs, slot.spec_synth_rng, slot.spec_is_replay);
                 }
+
+                // LLAMA_SPEC_TRACE: what the target made of this draft (server_spec_trace_cycle::verify)
+                if (slot.spec_trace) {
+                    auto & trc = slot.spec_trc;
+                    // the rule that ran, as the branches above and common_sampler_sample_and_accept_n_dist pick it
+                    if (slot.spec_is_replay) {
+                        trc.rule = "replay";
+                    } else if (!synth_probs.empty()) {
+                        trc.rule = "synth";
+                    } else if (!use_dist || llama_get_sampled_token_ith(slot.ctx_tgt, slot.spec_i_batch[0]) != LLAMA_TOKEN_NULL) {
+                        trc.rule = "greedy";
+                    } else {
+                        trc.rule = common_sampler_block_verify(smpl_save.get()) ? "dist-block" : "dist-pertoken";
+                    }
+                    trc.replay     = slot.spec_is_replay;
+                    trc.n_draft    = (int32_t) n_draft;
+                    trc.n_real     = (int32_t) n_real_draft;
+                    trc.pos0       = slot.prompt.tokens.pos_next() - (llama_pos) n_draft - 1;
+                    trc.n_ctx_used = (int32_t) slot.prompt.n_tokens() - (int32_t) n_draft - 1;
+                    trc.verify(smpl_save.get(), slot.ctx_tgt, slot.spec_draft, slot.spec_i_batch);
+                }
+
                 slot.spec_n_real = -1;
                 slot.spec_replay_forced = false;
                 slot.spec_i_batch.clear();
@@ -4405,6 +4766,10 @@ private:
 
             tl_mark("A1");
             const auto ids = std::move(slot.spec_draft);
+
+            if (slot.spec_trace) {
+                slot.spec_trace->write(slot.spec_trc, slot.task->id, slot.id, slot.task->params.sampling, ids);
+            }
 
             size_t n_accepted = ids.size() - 1;
             if (slot.spec_is_replay && n_accepted > 0) {

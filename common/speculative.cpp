@@ -1332,6 +1332,27 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     }
 };
 
+// a trace entry for one draft step, from its candidates (sorted, p normalized over them)
+static common_speculative_trace_step common_speculative_trace_step_from(const llama_token_data_array * cur_p) {
+    common_speculative_trace_step s = {};
+    s.id    = cur_p->data[0].id;
+    s.q     = cur_p->data[0].p;
+    s.n_top = std::min<int32_t>(5, (int32_t) cur_p->size);
+    for (int32_t k = 0; k < s.n_top; ++k) {
+        s.top_id[k] = cur_p->data[k].id;
+        s.top_p[k]  = cur_p->data[k].p;
+    }
+    double H = 0.0;
+    for (size_t k = 0; k < cur_p->size; ++k) {
+        const double p = cur_p->data[k].p;
+        if (p > 0.0) {
+            H -= p*std::log(p);
+        }
+    }
+    s.H = (float) H;
+    return s;
+}
+
 struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     common_params_speculative_draft params; // reuses the draft-model params slot (ctx_tgt/ctx_dft)
 
@@ -1749,6 +1770,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             dp.dists.clear();
             p_cum.resize(n_seq);
             p_cum[seq_id] = 1.0f;
+            if (dp.trace) {
+                dp.trace->clear();
+            }
 
             if (spec_log) {
                 spec_log_recs.resize(n_seq);
@@ -1832,7 +1856,18 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 // only collect very high-confidence draft tokens
                 const float pc_next = p_cum[seq_id]*cur_p->data[0].p;
                 const bool  stop    = cur_p->data[0].p < params.p_min || pc_next < p_cum_min(dparams.at(seq_id).pos0);
+
+                auto * trace = dparams.at(seq_id).trace;
+                if (trace) {
+                    trace->push_back(common_speculative_trace_step_from(cur_p));
+                }
+
                 if (stop) {
+                    if (trace) {
+                        const bool by_p_min = cur_p->data[0].p < params.p_min;
+                        trace->back().stop     = by_p_min ? "p_min" : "p_cum";
+                        trace->back().stop_thr = by_p_min ? params.p_min : p_cum_min(dparams.at(seq_id).pos0);
+                    }
                     drafting[seq_id] = false;
                     n_drafting--;
 
@@ -1880,6 +1915,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                         }
                     }
                     id = q[k].id;
+                    if (trace) {
+                        trace->back().id = id;
+                        trace->back().q  = q[k].p;
+                    }
                     dp.dists.push_back(std::move(q));
                 }
 
@@ -1889,6 +1928,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 result.push_back(id);
 
                 if (params.n_max <= (int) result.size()) {
+                    if (trace) {
+                        trace->back().stop     = "n_max";
+                        trace->back().stop_thr = (float) params.n_max;
+                    }
                     drafting[seq_id] = false;
                     n_drafting--;
                     continue;

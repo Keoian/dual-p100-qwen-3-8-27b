@@ -906,6 +906,27 @@ size_t common_spec_block_verify(const std::vector<std::vector<llama_token_data>>
     return tau;
 }
 
+// Block verification (LLAMA_SPEC_BLOCK_VERIFY=0 turns it off) (Sun et al., arXiv:2403.10444, Algorithm 2)
+// instead of the per-token rule. Same output distribution (their Theorem 1), and never fewer
+// accepted tokens in expectation (Theorem 2): a rejection at position i does not end the block,
+// a later position can still accept the longer prefix, and the correction token is drawn from a
+// residual scaled by the prefix's keep probability. It needs every position's target
+// distribution up front, so only for a stateless chain: no grammar, penalties, DRY, mirostat
+// or reasoning budget (their outputs would depend on the tokens accepted before them).
+bool common_sampler_block_verify(const struct common_sampler * gsmpl) {
+    static const bool block_verify = [] {
+        const char * s = getenv("LLAMA_SPEC_BLOCK_VERIFY");
+        return !s || atoi(s) != 0; // on by default; =0 restores the per-token rule
+    }();
+    const auto & sp = gsmpl->params;
+    return block_verify && !gsmpl->grmr && !gsmpl->rbudget && sp.penalty_repeat == 1.0f && sp.penalty_freq == 0.0f &&
+            sp.penalty_present == 0.0f && sp.dry_multiplier == 0.0f && sp.mirostat == 0;
+}
+
+bool common_sampler_has_grammar(const struct common_sampler * gsmpl) {
+    return gsmpl && (gsmpl->grmr || gsmpl->rbudget);
+}
+
 std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft,
         const std::vector<std::vector<llama_token_data>> & dists, std::mt19937 & rng) {
     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
@@ -922,20 +943,8 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_s
     std::vector<llama_token> result;
     result.reserve(idxs.size());
 
-    // Block verification (LLAMA_SPEC_BLOCK_VERIFY=0 turns it off) (Sun et al., arXiv:2403.10444, Algorithm 2)
-    // instead of the per-token rule. Same output distribution (their Theorem 1), and never fewer
-    // accepted tokens in expectation (Theorem 2): a rejection at position i does not end the block,
-    // a later position can still accept the longer prefix, and the correction token is drawn from a
-    // residual scaled by the prefix's keep probability. It needs every position's target
-    // distribution up front, so only for a stateless chain: no grammar, penalties, DRY, mirostat
-    // or reasoning budget (their outputs would depend on the tokens accepted before them).
-    static const bool block_verify = [] {
-        const char * s = getenv("LLAMA_SPEC_BLOCK_VERIFY");
-        return !s || atoi(s) != 0; // on by default; =0 restores the per-token rule
-    }();
-    const auto & sp = gsmpl->params;
-    if (block_verify && !gsmpl->grmr && !gsmpl->rbudget && sp.penalty_repeat == 1.0f && sp.penalty_freq == 0.0f &&
-            sp.penalty_present == 0.0f && sp.dry_multiplier == 0.0f && sp.mirostat == 0) {
+    // Block verification (common_sampler_block_verify) instead of the per-token rule
+    if (common_sampler_block_verify(gsmpl)) {
         const size_t G = draft.size();
         // target distributions after X^i (i = 0..G) and a token drawn from each
         std::vector<std::vector<llama_token_data>> P(G + 1);

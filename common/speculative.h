@@ -50,6 +50,19 @@ common_speculative * common_speculative_init(common_params_speculative & params,
 
 void common_speculative_free(common_speculative * spec);
 
+// one decoded draft step, for the server's LLAMA_SPEC_TRACE (the MTP draft fills these). the step that
+// stopped drafting is included: its id is the top-1, which was not added to the draft
+struct common_speculative_trace_step {
+    llama_token  id;         // the drafted token
+    float        q;          // the draft's probability of id: the sampled q, else the top-1 p
+    float        H;          // entropy (nats) of the draft's candidates (top-K, p at T=1)
+    int32_t      n_top;
+    llama_token  top_id[5];  // the draft's top candidates, with their p as above
+    float        top_p[5];
+    const char * stop;       // why drafting stopped at this step ("p_min", "p_cum", "n_max"), or nullptr
+    float        stop_thr;   // the threshold that stopped it
+};
+
 struct common_speculative_draft_params {
     // this flag is used to chain the drafts through all the available implementations
     // after the first successful draft from an implementation, we set it
@@ -75,6 +88,9 @@ struct common_speculative_draft_params {
     // with the speculative-sampling rule (common_sampler_sample_and_accept_n_dist). empty for
     // greedy drafts.
     std::vector<std::vector<llama_token_data>> dists = {};
+
+    // when set, the draft clears it and appends one entry per decoded step (nullptr: off)
+    std::vector<common_speculative_trace_step> * trace = nullptr;
 };
 
 // whether any configured draft type reads common_speculative_draft_params::prompt when drafting (the

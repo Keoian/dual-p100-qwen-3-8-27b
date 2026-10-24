@@ -107,6 +107,13 @@ size_t common_spec_block_verify(const std::vector<std::vector<llama_token_data>>
 std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft,
         const std::vector<std::vector<llama_token_data>> & dists, std::mt19937 & rng);
 
+// whether common_sampler_sample_and_accept_n_dist verifies with block verification for this sampler
+// (LLAMA_SPEC_BLOCK_VERIFY and a stateless chain), rather than the per-token rule
+bool common_sampler_block_verify(const struct common_sampler * gsmpl);
+
+// whether the sampler has a grammar or a reasoning budget sampler
+bool common_sampler_has_grammar(const struct common_sampler * gsmpl);
+
 uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl);
 
 // force the reasoning budget sampler (if any) to begin forcing its end sequence now.
