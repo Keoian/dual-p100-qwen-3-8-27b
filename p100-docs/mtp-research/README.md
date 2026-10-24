@@ -86,6 +86,7 @@ The measured rule recovers about a quarter of that.
 | [TRACE_SCHEMA.md](TRACE_SCHEMA.md) | trace format |
 | [ANALYSIS.md](ANALYSIS.md) | offline analysis: depth curve, cost model, policies, heads, lenient acceptance, task type |
 | [GROUNDING.md](GROUNDING.md) | the rule with thinking on and at long context, the temperature gate, the thinking tables (windows 9-12) |
+| [CF_ANALYSIS.md](CF_ANALYSIS.md) | stop-rule tables recomputed for 480 sampling settings from traced raw logits; the approximations; deeper caps; exact-width verify (windows 13-15) |
 | `analysis/` | the analysis scripts (`run_all.sh`; `run_think.sh` for the thinking-on traces) |
 | `scripts/` | the suite runner, the long-context runner, the test-window scripts (they stop and restore the box's production server), their summaries, and `prod-patch.py` (the rule without trace hooks for the default branch) |
 | `suite/prompts.json` | the 72-prompt suite with categories and splits |

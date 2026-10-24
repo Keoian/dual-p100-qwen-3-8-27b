@@ -17,6 +17,8 @@ maxtok = int(os.environ.get("MAXTOK", "400"))
 S = {"nothink": dict(temperature=0.7, top_p=0.8, top_k=20, min_p=0.0, presence_penalty=1.5),
      "kmic": dict(temperature=1.0, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=0.0),
      "greedy": dict(temperature=0.0, top_k=1, presence_penalty=0.0)}[os.environ.get("SAMPLING", "nothink")]
+if os.environ.get("TEMP"):  # override the sampling set's temperature (window 14: settings outside the card's)
+    S = dict(S, temperature=float(os.environ["TEMP"]))
 suite = [p for p in json.load(open("/work/bench/mtp3/suite/prompts.json"))
          if p["split"] in splits and (not cats or p["category"] in cats.split(","))]
 os.makedirs("/work/bench/mtp3/runs", exist_ok=True)

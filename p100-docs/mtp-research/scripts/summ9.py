@@ -8,7 +8,9 @@ def load(l):
     return [r for r in rs if not os.environ.get("SPLIT") or r["split"] == os.environ["SPLIT"]]
 def tps(rs): return sum(r["predicted_n"] for r in rs) / sum(r["predicted_ms"] for r in rs) * 1000
 pref = sys.argv[1] if len(sys.argv) > 1 else "A9"
-for mode, name in (("M", "medium effort (budget sampler, per-token rule)"), ("N", "no effort (block verify)")):
+MODES = [m.split(":", 1) for m in os.environ["MODES"].split(",")] if os.environ.get("MODES") else \
+        [("M", "medium effort (budget sampler, per-token rule)"), ("N", "no effort (block verify)")]
+for mode, name in MODES:
     P, L = load(f"{pref}-{mode}P"), load(f"{pref}-{mode}L")
     if not P or not L:
         print(mode, "missing"); continue
