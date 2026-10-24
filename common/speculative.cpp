@@ -1353,6 +1353,38 @@ static common_speculative_trace_step common_speculative_trace_step_from(const ll
     return s;
 }
 
+// LLAMA_SPEC_STOP_ISO=<theta> (research, mtp-adaptive-research; default off): stop drafting when the estimated
+// survival of the drafted prefix through this step, prod_{i<d} iso_q(q_i) * iso_p1(p1_d), falls below theta, instead
+// of the p-min test. q_i is the draft's probability of the token it drafted at step i, p1_d the top-1 probability of
+// step d's distribution; the two maps are isotonic fits of the target's p/q acceptance (min(1, p/q)) on traced cycles
+// (Qwen3.8-27B UD-Q6_K, thinking-off sampling, sampled drafts at T 1.0; /work/bench/mtp3/analysis). The decision for
+// step d uses only step d's distribution and the tokens already drafted, never the token drawn at step d, so the
+// speculative-sampling rule keeps the output distribution exact. The depth-based p_cum guard still applies.
+static const float spec_stop_iso = [] {
+    const char * s = getenv("LLAMA_SPEC_STOP_ISO");
+    return s ? (float) atof(s) : 0.0f;
+}();
+static const float spec_iso_x [24] = { 0.000f, 0.020f, 0.050f, 0.100f, 0.150f, 0.200f, 0.250f, 0.300f, 0.350f, 0.400f, 0.450f, 0.500f,
+                                       0.550f, 0.600f, 0.650f, 0.700f, 0.750f, 0.800f, 0.850f, 0.900f, 0.950f, 0.980f, 0.995f, 1.000f };
+static const float spec_iso_q [24] = { 0.000f, 0.115f, 0.147f, 0.231f, 0.250f, 0.267f, 0.299f, 0.299f, 0.299f, 0.321f, 0.350f, 0.389f,
+                                       0.402f, 0.419f, 0.419f, 0.419f, 0.437f, 0.503f, 0.530f, 0.570f, 0.603f, 0.734f, 0.821f, 0.994f };
+static const float spec_iso_p1[24] = { 0.000f, 0.000f, 0.000f, 0.000f, 0.100f, 0.156f, 0.156f, 0.200f, 0.200f, 0.209f, 0.248f, 0.325f,
+                                       0.328f, 0.369f, 0.369f, 0.369f, 0.399f, 0.431f, 0.502f, 0.522f, 0.573f, 0.708f, 0.812f, 0.994f };
+
+// piecewise-linear between the table's points
+static float spec_iso_lookup(const float * tab, const float x) {
+    if (x <= spec_iso_x[0]) {
+        return tab[0];
+    }
+    for (int j = 1; j < 24; ++j) {
+        if (x <= spec_iso_x[j]) {
+            const float t = (x - spec_iso_x[j - 1]) / (spec_iso_x[j] - spec_iso_x[j - 1]);
+            return tab[j - 1] + t*(tab[j] - tab[j - 1]);
+        }
+    }
+    return tab[23];
+}
+
 struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     common_params_speculative_draft params; // reuses the draft-model params slot (ctx_tgt/ctx_dft)
 
@@ -1459,6 +1491,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         return s ? (float) atof(s) : -1.0f;
     }();
     std::vector<float> p_cum;
+    std::vector<float> s_iso; // LLAMA_SPEC_STOP_ISO: estimated survival of the drafted prefix
 
     float p_cum_min(const llama_pos pos) const {
         if (p_cum_env >= 0.0f) {
@@ -1770,6 +1803,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             dp.dists.clear();
             p_cum.resize(n_seq);
             p_cum[seq_id] = 1.0f;
+            s_iso.resize(n_seq);
+            s_iso[seq_id] = 1.0f;
             if (dp.trace) {
                 dp.trace->clear();
             }
@@ -1855,7 +1890,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
                 // only collect very high-confidence draft tokens
                 const float pc_next = p_cum[seq_id]*cur_p->data[0].p;
-                const bool  stop    = cur_p->data[0].p < params.p_min || pc_next < p_cum_min(dparams.at(seq_id).pos0);
+                const bool  by_iso  = spec_stop_iso > 0.0f && s_iso[seq_id]*spec_iso_lookup(spec_iso_p1, cur_p->data[0].p) < spec_stop_iso;
+                const bool  stop    = (spec_stop_iso > 0.0f ? by_iso : cur_p->data[0].p < params.p_min) ||
+                                      pc_next < p_cum_min(dparams.at(seq_id).pos0);
 
                 auto * trace = dparams.at(seq_id).trace;
                 if (trace) {
@@ -1864,9 +1901,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
                 if (stop) {
                     if (trace) {
-                        const bool by_p_min = cur_p->data[0].p < params.p_min;
-                        trace->back().stop     = by_p_min ? "p_min" : "p_cum";
-                        trace->back().stop_thr = by_p_min ? params.p_min : p_cum_min(dparams.at(seq_id).pos0);
+                        const bool by_p_min = spec_stop_iso <= 0.0f && cur_p->data[0].p < params.p_min;
+                        trace->back().stop     = by_iso ? "iso" : by_p_min ? "p_min" : "p_cum";
+                        trace->back().stop_thr = by_iso ? spec_stop_iso : by_p_min ? params.p_min : p_cum_min(dparams.at(seq_id).pos0);
                     }
                     drafting[seq_id] = false;
                     n_drafting--;
@@ -1877,6 +1914,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
                 auto & dp = dparams.at(seq_id);
 
+                float q_id = cur_p->data[0].p; // the draft's probability of the token it drafts
                 if (sample_temp > 0.0f) {
                     // cur_p is sorted by p, i.e. by logit
                     std::vector<llama_token_data> q(cur_p->data, cur_p->data + cur_p->size);
@@ -1915,11 +1953,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                         }
                     }
                     id = q[k].id;
+                    q_id = q[k].p;
                     if (trace) {
                         trace->back().id = id;
                         trace->back().q  = q[k].p;
                     }
                     dp.dists.push_back(std::move(q));
+                }
+
+                if (spec_stop_iso > 0.0f) {
+                    s_iso[seq_id] *= spec_iso_lookup(spec_iso_q, q_id);
                 }
 
                 common_sampler_accept(smpl, id, true);
