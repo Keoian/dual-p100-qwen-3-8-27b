@@ -22,12 +22,13 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
     (c73976485), and the bf16 exchange wire in the start script (`AR_BF16=1`, ef2df6c23). Production runs all of it
     since 10-24;
   - the MTP draft's learned stop rule (CHANGES §22, 10-24): `LLAMA_SPEC_STOP_ISO` with its temperature gate
-    (c44158c77), on in the start script (`STOP_ISO=0.125`, a6c045269). Production runs it since 10-24 evening.
+    (c44158c77), on in the start script (`STOP_ISO=0.125`, a6c045269); tables for thinking requests (504d4d353),
+    on in the start script (`STOP_ISO_THINK=0.15`, e0b402541). Production runs both since 10-24 evening.
 - Production on :8090 is `p100-docs/deploy/start-qwen-vision.sh` (which runs `start-qwen.sh`) from `build-vision`:
   - `-c 262144 -sm tensor`, KV q8_0 K / q4_0 V, `-ub 1024 -b 2048 -np 1`;
-  - MTP drafts n-max 4, `LLAMA_SPEC_SAMPLE_TEMP=1.0`, `LLAMA_SPEC_DRAFT_TOPK=20`; the draft stops by the lookup rule
-    (`STOP_ISO=0.125`) for thinking-off requests and by p-min 0.2 for thinking ones (target temperature outside
-    0.5-0.9): chat +4.7%, long context +4.8%, exact;
+  - MTP drafts n-max 4, `LLAMA_SPEC_SAMPLE_TEMP=1.0`, `LLAMA_SPEC_DRAFT_TOPK=20`; the draft stops by the lookup rule,
+    one pair of tables per thinking mode chosen by the target temperature (`STOP_ISO=0.125` for 0.5-0.9,
+    `STOP_ISO_THINK=0.15` for 0.95-1.05, p-min 0.2 otherwise): chat +4.7%, long context +4.8%, thinking +2.9%, exact;
   - `-ctxcp 32 --cache-ram 24576` (48 GB host; on 32 GB `CTXCP=4 CACHE_RAM=8192`);
   - Q8_0 projector on GPU1, `IMAGE_MAX_TOKENS=3600`, `GGML_CUDA_FA_VEC_MAX_Q=16`, `GGML_CUDA_FA_GEMM_MINQ=17`;
   - `--reasoning off` with `LLAMA_THINK_BY_BUDGET=1` and `LLAMA_SAMPLING_BY_MODE=1`: thinking off 0.7 / 0.8 / 20 / 0
@@ -36,9 +37,10 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   - `AR_BF16=1` (`GGML_CUDA_AR_BF16_THRESHOLD=1`): the decode and verify exchanges cross PCIe as bf16 (MTP replies
     +6.8%, KLD +1.1%; `AR_BF16=0` for exact f32);
   - JEV off, API key file, alias `qwen3.8-27b`, `--slot-save-path`, 150 W cap, no `GGML_CUDA_P2P`;
-  - binaries: `build-vision/bin` built 10-24 from c44158c77's code (snapshot `/work/bench/mtp3/bin-prod-iso`),
+  - binaries: `build-vision/bin` built 10-24 from 504d4d353's code (snapshot `/work/bench/mtp3/bin-think`),
     `400aac811` included;
-  - rollback: the stop rule off on its own: restart with `STOP_ISO=0`. The binaries before it:
+  - rollback: the stop rule off on its own: restart with `STOP_ISO=0 STOP_ISO_THINK=0`. Binaries without the
+    thinking tables: `/work/bench/mtp3/bin-prod-iso/bin/*`. The binaries before the rule:
     `/work/bench/forks/exp2/bin/*` (c73976485's code). Back to 10-23's production: copy
     `/work/bench/think/bin-prod-0d682248f/*` into `build-vision/bin` and restart with `AR_BF16=0 STOP_ISO=0`. The bf16
     wire off on its own: restart with `AR_BF16=0`;

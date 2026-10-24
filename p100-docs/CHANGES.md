@@ -760,6 +760,8 @@ probability min(1, p/q) on the dev split of ~9,600 traced verify cycles. The res
 |---|---|
 | `c44158c77` | `LLAMA_SPEC_STOP_ISO=<theta>` (default off) and `LLAMA_SPEC_STOP_ISO_TEMP=<lo>,<hi>` (default 0.5,0.9): the rule, for requests whose target temperature lies in the range; the server passes each request's temperature to the draft |
 | `a6c045269` | `start-qwen.sh`: `STOP_ISO=0.125` |
+| `504d4d353` | `LLAMA_SPEC_STOP_ISO_THINK=<theta>` (default off) and `LLAMA_SPEC_STOP_ISO_THINK_TEMP` (default 0.95,1.05): a second pair of tables, fit on thinking-on cycles, for thinking requests |
+| `e0b402541` | `start-qwen.sh`: `STOP_ISO_THINK=0.15` |
 
 **Exact.** The decision to draft token d uses only step d's distribution and the tokens drafted before it, never the
 token drawn at step d. That is a stopping rule the speculative-sampling proof allows, so the output distribution is
@@ -781,14 +783,19 @@ because it drops the tails that would have been rejected.
 | long context, thinking off, 16 questions each at 32k / 64k / 128k / 200k (saved slots) | 49.28 / 46.54 / 40.07 / 35.20 | 52.54 / 49.45 / 41.17 / 36.32 | +6.6 / +6.2 / +2.8 / +3.2%; all 64: +4.8% (+2.1..+7.4) |
 | thinking on, `reasoning_effort` medium (budget sampler, per-token rule), 24 held-out | 49.11 | 48.70 | -0.8% (-4.7..+1.9) |
 | thinking on, no effort level (block verify), 24 held-out | 48.59 | 49.49 | +1.9% (-1.1..+5.6) |
+| thinking on, medium, 72 prompts, **thinking tables** at 0.15 | 50.09 | 51.57 | +2.9% (+1.4..+4.6); held-out 24: +4.5% (+1.4..+6.9) |
+| thinking on, no effort (block verify), 24 held-out, **thinking tables** | 48.41 | 49.67 | +2.6% (-0.6..+5.6) |
 
-**Why thinking requests keep p-min.** The tables were fit at the thinking-off sampling (target 0.7 / 0.8 / 20,
-presence 1.5). At the thinking sampling (1.0 / 0.95) the target accepts more of the draft than they predict, so the
-rule stops too early: 2.40 tokens per cycle instead of 3.90, 0.32 accepted tokens lost per cycle. The gate keeps the
-p-min test outside 0.5-0.9: with the rule on, every thinking reply of the checks matched production's token for
-token (48 of 48), and every thinking-off reply matched the ungated rule's (72 of 72).
+**Thinking requests get their own tables.** The first tables were fit at the thinking-off sampling (target 0.7 /
+0.8 / 20, presence 1.5). At the thinking sampling (1.0 / 0.95) the target accepts more of the draft than they
+predict, so the rule stopped too early: 2.40 tokens per cycle instead of 3.90, 0.32 accepted tokens lost per cycle,
+no gain. So the server passes each request's target temperature to the draft, and the temperature picks the tables:
+0.5-0.9 the thinking-off pair, 0.95-1.05 a second pair fit on ~36,000 traced thinking-on cycles (medium effort;
+acceptance at a given draft probability is higher, e.g. 0.46 instead of 0.32 at q 0.45), anything else p-min. With
+the thinking tables off, every thinking reply of the checks matched production's token for token (48 of 48), and
+every thinking-off reply matched the ungated rule's (72 of 72).
 
-`STOP_ISO=0` (or `LLAMA_SPEC_STOP_ISO=0`) restores p-min for every request.
+`STOP_ISO=0` (`LLAMA_SPEC_STOP_ISO=0`) restores p-min for thinking-off requests, `STOP_ISO_THINK=0` for thinking ones.
 
 ## Known gaps
 
