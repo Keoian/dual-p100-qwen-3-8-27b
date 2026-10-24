@@ -280,7 +280,7 @@ for A/B tests, the server ones change behaviour. Where `start-qwen.sh` sets one,
 | `LLAMA_SAMPLING_NOTHINK` | `{"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5}` (`start-qwen.sh`: `NOTHINK_SAMPLING`) | the thinking-off set |
 | `LLAMA_SAMPLER_PREFILTER_PENALTIES` | 1 | with a repetition / frequency / presence penalty active, the sampler's top-k prefilter takes top_k + penalty_last_n candidates (same output; +2.2% with MTP, CHANGES §21); `=0` keeps the whole vocabulary |
 | `LLAMA_SPEC_STOP_ISO` | 0 (off) (`start-qwen.sh`: `STOP_ISO`, 0.125) | `=<theta>`: the MTP draft stops when the estimated chance that the whole drafted prefix is accepted (two lookup tables fit on traced verify cycles) falls below theta, instead of the p-min test (§22). Exact; chat replies +4.7%, long context +4.8% at 0.125 |
-| `LLAMA_SPEC_STOP_ISO_TEMP` | `0.5,0.9` | the target temperatures the stop rule applies to; requests outside keep the p-min test (the tables were fit at the thinking-off 0.7 and gain nothing at the thinking 1.0) |
+| `LLAMA_SPEC_STOP_ISO_TEMP` | `0.001,1e9` (any positive temperature) | the target temperatures the chat tables apply to, after the thinking window; outside both (greedy) the p-min test. Tables recomputed for 480 settings stayed within ~0.1% of the two sets; T 0.3 / 1.2 measured +6.6% / +6.1% over p-min. `0.5,0.9` was the window before f5fbd2542 |
 | `LLAMA_SPEC_STOP_ISO_THINK` | 0 (off) (`start-qwen.sh`: `STOP_ISO_THINK`, 0.15) | `=<theta>`: the stop rule with tables fit on thinking-on cycles, for requests in `LLAMA_SPEC_STOP_ISO_THINK_TEMP`. Exact; thinking replies +2.9% at 0.15 |
 | `LLAMA_SPEC_STOP_ISO_THINK_TEMP` | `0.95,1.05` | the target temperatures the thinking tables apply to |
 

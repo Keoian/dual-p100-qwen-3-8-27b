@@ -762,6 +762,7 @@ probability min(1, p/q) on the dev split of ~9,600 traced verify cycles. The res
 | `a6c045269` | `start-qwen.sh`: `STOP_ISO=0.125` |
 | `504d4d353` | `LLAMA_SPEC_STOP_ISO_THINK=<theta>` (default off) and `LLAMA_SPEC_STOP_ISO_THINK_TEMP` (default 0.95,1.05): a second pair of tables, fit on thinking-on cycles, for thinking requests |
 | `e0b402541` | `start-qwen.sh`: `STOP_ISO_THINK=0.15` |
+| `f5fbd2542` | the chat tables at every positive temperature outside the thinking window (`LLAMA_SPEC_STOP_ISO_TEMP` default 0.001,1e9), instead of the p-min test; greedy keeps p-min |
 
 **Exact.** The decision to draft token d uses only step d's distribution and the tokens drafted before it, never the
 token drawn at step d. That is a stopping rule the speculative-sampling proof allows, so the output distribution is
@@ -785,6 +786,8 @@ because it drops the tails that would have been rejected.
 | thinking on, no effort level (block verify), 24 held-out | 48.59 | 49.49 | +1.9% (-1.1..+5.6) |
 | thinking on, medium, 72 prompts, **thinking tables** at 0.15 | 50.09 | 51.57 | +2.9% (+1.4..+4.6); held-out 24: +4.5% (+1.4..+6.9) |
 | thinking on, no effort (block verify), 24 held-out, **thinking tables** | 48.41 | 49.67 | +2.6% (-0.6..+5.6) |
+| thinking off at **T 0.3**, 72 prompts, chat tables vs the p-min fallback | 47.65 | 50.81 | +6.6% (+4.7..+8.7) |
+| thinking off at **T 1.2**, 72 prompts, chat tables vs the p-min fallback | 48.39 | 51.33 | +6.1% (+3.8..+8.2) |
 
 **Thinking requests get their own tables.** The first tables were fit at the thinking-off sampling (target 0.7 /
 0.8 / 20, presence 1.5). At the thinking sampling (1.0 / 0.95) the target accepts more of the draft than they
@@ -795,7 +798,17 @@ acceptance at a given draft probability is higher, e.g. 0.46 instead of 0.32 at 
 the thinking tables off, every thinking reply of the checks matched production's token for token (48 of 48), and
 every thinking-off reply matched the ungated rule's (72 of 72).
 
-`STOP_ISO=0` (`LLAMA_SPEC_STOP_ISO=0`) restores p-min for thinking-off requests, `STOP_ISO_THINK=0` for thinking ones.
+**Any other sampling setting.** The draft samples the same way whatever the request's sampling is, so a traced
+draft token's acceptance under another target setting is min(1, p_S/q), with p_S from that setting's sampler chain
+on the target's raw logits. The research branch's trace records them (`LLAMA_SPEC_TRACE_TOPK`; the recomputation
+reproduced the server's p of 92,892 drafted tokens within 5.3e-7). Tables fit this way for 480 settings
+(temperature 0.3-1.2 x top-p x top-k x min-p x presence) came within ~0.1% of the two existing sets everywhere,
+simulated. So the chat tables now serve every positive temperature outside the thinking window (`f5fbd2542`),
+measured +6.6% at T 0.3 and +6.1% at T 1.2 over the p-min fallback. Greedy requests (T <= 0) weren't in the grid
+and keep p-min.
+
+`STOP_ISO=0` (`LLAMA_SPEC_STOP_ISO=0`) restores p-min for thinking-off requests, `STOP_ISO_THINK=0` for thinking ones,
+and `LLAMA_SPEC_STOP_ISO_TEMP=0.5,0.9` the previous temperature window.
 
 ## Known gaps
 

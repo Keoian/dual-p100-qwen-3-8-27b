@@ -79,8 +79,9 @@ all 248k for every sampled token. Presence 1.5 with MTP 40.0 -> 44.7 t/s, identi
 when the draft's top token falls below p 0.2, it stops when the estimated chance that the whole drafted prefix is
 accepted falls below 0.125 (two lookup tables fit on traced verify cycles). Thinking-off chat replies +4.7%, long
 context (32k-200k) +4.8%; the output distribution is unchanged. Thinking requests use their own tables, fit on
-thinking-on traces (the thinking-off ones gained nothing there): +2.9%. `STOP_ISO=0` / `STOP_ISO_THINK=0` in the
-start script turn them off.
+thinking-on traces (the thinking-off ones gained nothing there): +2.9%. Other temperatures (a client's own
+sampling) use the chat tables too: +6.6% at T 0.3, +6.1% at T 1.2. `STOP_ISO=0` / `STOP_ISO_THINK=0` in the start
+script turn them off.
 
 **Fixes:**
 - a GGML_ASSERT on 9-16-token prompts in Kmic's current tip (*PR*; production's configuration never tripped it, and
