@@ -71,9 +71,10 @@ export LD_LIBRARY_PATH="$BUILD/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 AR_BF16=${AR_BF16:-1}
 export GGML_CUDA_AR_BF16_THRESHOLD=${GGML_CUDA_AR_BF16_THRESHOLD:-$AR_BF16}
 # STOP_ISO=<theta>: the MTP draft stops by a lookup of how likely the drafted tokens are to be accepted (LLAMA_SPEC_STOP_ISO,
-# CHANGES §22) instead of the p-min test, for requests at target temperature 0.5-0.9 (thinking off; LLAMA_SPEC_STOP_ISO_TEMP).
-# Exact: same output distribution. 10-24: chat replies 49.30 -> 51.61 t/s (+4.7%), long context 32k-200k +4.8%.
-# STOP_ISO=0: p-min for thinking-off requests.
+# CHANGES §22) instead of the p-min test, for requests at any target temperature > 0 outside the thinking window
+# (thinking off, or a client's own temperature; LLAMA_SPEC_STOP_ISO_TEMP). Exact: same output distribution. 10-24: chat
+# replies 49.30 -> 51.61 t/s (+4.7%), long context 32k-200k +4.8%, T 0.3 / 1.2 +6.6% / +6.1%.
+# STOP_ISO=0: p-min for those requests.
 # STOP_ISO_THINK=<theta>: the same rule with tables fit on thinking-on traces, for requests at target temperature
 # 0.95-1.05 (thinking on; LLAMA_SPEC_STOP_ISO_THINK_TEMP). 10-24: medium effort, 72 prompts, +2.9%.
 # STOP_ISO_THINK=0: p-min for thinking requests

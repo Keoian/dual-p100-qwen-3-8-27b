@@ -364,6 +364,49 @@ CHANGES §16 lists the commits.
 - **qr0n's GEMM-attention NaN** (their issue #4, blamed on cuBLAS 12.8) matches the softmax race fixed here by
   `03da0202b` (Kmic's #4). Their `fattn-gemm.cu` lacks that barrier.
 
+## The MTP draft's stop rule (2026-10-24, CHANGES §22)
+
+The research is on branch `mtp-adaptive-research` (`p100-docs/mtp-research/`: README, ANALYSIS, GROUNDING,
+CF_ANALYSIS). Numbers are measured unless marked simulated.
+- **Fixed draft policies sit on a plateau; when to stop is the lever.** n-max 2-4 and p-min 0-0.6 all land within
+  ~1% of production. A lookup of the drafted prefix's predicted acceptance (two isotonic tables) gained +4.7% (+8.0%
+  held out). It drafts 2.70 tokens per cycle instead of 3.84 and loses only 0.11 accepted ones; the time saved is the
+  padded verify's skipped columns (~4 ms each). An oracle gets +17% (simulated). Task-type and difficulty heads add
+  +0.0 / +0.1% (simulated).
+- **A stop rule must never look at the token drawn at the step it decides.** That biases the p/q rule (simulated:
+  0.55 / 0.45 instead of 0.5 / 0.5). Using only earlier tokens makes the draft length a stopping time, exact under a
+  reasoning-budget sampler and under block verification too.
+- **Acceptance tables follow the target's sampling more than the text.** The chat tables at the thinking sampling
+  (T 1.0, top-p 0.95) stopped too early: 2.40 tokens per cycle instead of 3.90, -0.8%. Fit on thinking traces, the
+  acceptance at q 0.02 is 0.251 instead of 0.115, and those tables gained +2.9%. Content alone moves the tables by up
+  to ~0.1 but costs at most ~0.25% throughput on average (simulated).
+- **Tables for any sampling setting come from one trace.** The draft samples the same way whatever the request asks
+  (T 1.0, top 20), so a traced draft token's acceptance under another target setting is min(1, p_S/q), with p_S
+  replayed from the target's raw top-128 logits, their log-sum-exp and the penalty window (`LLAMA_SPEC_TRACE_TOPK`;
+  the replay matched the server's p for 92,892 rows within 5.3e-7). Over 480 settings, production's two sets came
+  within ~0.1% of each setting's own tables on average; the loss was the p-min fallback outside their temperature
+  windows (~5%, up to 6.8%, simulated). The chat tables at every other T measured +6.6% at T 0.3 and +6.1% at T 1.2.
+- **Measure what the simulator recommends.** It said +2.7% for the chat tables at the thinking setting, where the
+  server measured -0.8%. At T 0.3 / 1.2 it said +6% / +3.8% and the server gave +6.6% / +6.1%.
+- **Deeper drafts don't pay, even with the rule.** n-max 5 / 6 / 7 simulate -2.5 / -8.6 / -14.2% vs production
+  (thinking -5.1 / -11.1 / -16.3%): a verify column past width 5 costs ~8.7 ms, and a 5th draft token is worth ~0.2
+  expected tokens per cycle. The MTP doesn't drift on its own prefix (acceptance after an accepted prefix stays
+  0.68-0.77 out to depth 8), but survival decays geometrically: 0.76, 0.52, 0.36, 0.26, ...
+- **An exact-width verify isn't cheaper than the padded one.** Padding to 5 and skipping the inactive columns is
+  already nearly free: an unpadded verify (`LLAMA_SPEC_PAD=0`) minus its extra graph build is only 0.3-1.2% cheaper
+  at the same width (2 columns 42.26 vs 42.77 ms), and end to end it is 11% slower, from a graph rebuild (~11 ms) at
+  each width change. The simulator's +3% for it came from narrow-width verify costs calibrated too low.
+- **Unverified drafting can't skip target compute here.** Every committed token must pass through the target to
+  advance its KV and 48-layer recurrent state, and that pass is the verify. The realistic form, lenient acceptance,
+  simulates +3.9% at 1.9% divergent tokens up to +9.2% at 4.5%; it needs a quality evaluation and must stay off
+  under a grammar.
+- **The RAM prompt cache breaks bit-identity between runs.** A thinking-on request right after the thinking-off one
+  for the same prompt reused its prefix state (`prompt_n` 2), computed in a different batch, and its text differed;
+  resent with `cache_prompt: false` it matched. Compare runs with the prompt cache off.
+- **Follow-up questions on a restored long context need no new restore.** The next question rolls back to the
+  document's end through a context checkpoint and processes only itself (37-43 tokens, 0.6-1.0 s at 32k-200k), with
+  the same reply as after a fresh restore.
+
 ## What transfers to other Pascal cards
 
 - **Direct KV-cache dequantization** helps any pre-Volta GPU with a quantized KV cache, and more

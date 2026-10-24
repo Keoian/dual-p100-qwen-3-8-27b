@@ -794,9 +794,9 @@ because it drops the tails that would have been rejected.
 predict, so the rule stopped too early: 2.40 tokens per cycle instead of 3.90, 0.32 accepted tokens lost per cycle,
 no gain. So the server passes each request's target temperature to the draft, and the temperature picks the tables:
 0.5-0.9 the thinking-off pair, 0.95-1.05 a second pair fit on ~36,000 traced thinking-on cycles (medium effort;
-acceptance at a given draft probability is higher, e.g. 0.46 instead of 0.32 at q 0.45), anything else p-min. With
-the thinking tables off, every thinking reply of the checks matched production's token for token (48 of 48), and
-every thinking-off reply matched the ungated rule's (72 of 72).
+acceptance at a given draft probability is higher, e.g. 0.46 instead of 0.32 at q 0.45), anything else p-min
+(until `f5fbd2542`, below). With the thinking tables off, every thinking reply of the checks matched production's
+token for token (48 of 48), and every thinking-off reply matched the ungated rule's (72 of 72).
 
 **Any other sampling setting.** The draft samples the same way whatever the request's sampling is, so a traced
 draft token's acceptance under another target setting is min(1, p_S/q), with p_S from that setting's sampler chain
@@ -807,8 +807,13 @@ simulated. So the chat tables now serve every positive temperature outside the t
 measured +6.6% at T 0.3 and +6.1% at T 1.2 over the p-min fallback. Greedy requests (T <= 0) weren't in the grid
 and keep p-min.
 
-`STOP_ISO=0` (`LLAMA_SPEC_STOP_ISO=0`) restores p-min for thinking-off requests, `STOP_ISO_THINK=0` for thinking ones,
-and `LLAMA_SPEC_STOP_ISO_TEMP=0.5,0.9` the previous temperature window.
+**What didn't pay** (FINDINGS "The MTP draft's stop rule"): drafting deeper than 4 with the rule (n-max 5 / 6 / 7
+simulated -2.5 / -8.6 / -14.2% vs production), an exact-width verify instead of the padded one (measured only
+0.3-1.2% cheaper per call, -11% end to end from graph rebuilds), task-type and difficulty heads (+0.0 / +0.1%,
+simulated).
+
+`STOP_ISO=0` (`LLAMA_SPEC_STOP_ISO=0`) restores p-min for every request outside the thinking window,
+`STOP_ISO_THINK=0` for thinking ones, and `LLAMA_SPEC_STOP_ISO_TEMP=0.5,0.9` the previous temperature window.
 
 ## Known gaps
 
@@ -819,7 +824,7 @@ and `LLAMA_SPEC_STOP_ISO_TEMP=0.5,0.9` the previous temperature window.
   Probably the `fattn_gemm_softmax` race fixed in `03da0202b` (§16: same path, same symptoms);
   not re-run with virtual devices.
 - **Prefill at depth is power-bound.** The fold GEMM and attention kernels hold the cards at their
-  175 W cap (§14; the no-P2P board of §15-21 runs at 150 W, §16, so its absolute numbers are lower). Faster code in the same instructions doesn't help; less energy per flop would.
+  175 W cap (§14; the no-P2P board of §15-22 runs at 150 W, §16, so its absolute numbers are lower). Faster code in the same instructions doesn't help; less energy per flop would.
 - **Attention at depth is compute-bound, not bandwidth-bound.** q4p (§10, §11) runs the 5-token
   verify at 262144 in 2.68 ms per call with fp16 products; the cache read alone would take ~0.35.
   It is at 255 registers and one block per SM, so what is left is latency, not arithmetic. Time

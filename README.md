@@ -26,7 +26,7 @@ workload**: a long fixed system prompt, then short turns. The working branch is 
 | | |
 |---|---|
 | plain decode | **31.1 t/s** (10-24); 26.2 at 64k context, 23.4 at 128k (10-22) |
-| decode with MTP (chat replies) | **~47 t/s** (per-reply median 46.8 over 2 x 24 replies to 8 prompts, thinking-off sampling; 52.8 over all their tokens; 10-24) |
+| decode with MTP (chat replies) | **~47 t/s** (per-reply median 46.8 over 2 x 24 replies to 8 prompts, thinking-off sampling; 52.8 over all their tokens; 10-24, before the MTP draft's stop rule below, which added +4.7% on a 72-prompt suite: 49.30 -> 51.61 t/s) |
 | prefill | **410 t/s** at 512 tokens, 413 at 2,048; filling the window to 255k runs 355 -> 144 t/s |
 | time to first token | **~0.5 s** for a short message on a 25k-token cached conversation |
 | 1440p screenshot | vision encoder ~5.7 s; small text 96-100% legible; at 259k context: 31.6 s to read it in, then 27.3 t/s |
@@ -112,7 +112,7 @@ The fork's `p100-optimizations` branch is an old snapshot of Kmic's (2026-10-01)
 
 **Why each setting** (and how it differs from Kmic's command): [p100-docs/QUICKSTART.md](p100-docs/QUICKSTART.md).
 **The exact production command:** [p100-docs/deploy/README.md](p100-docs/deploy/README.md).
-**Every change with its numbers:** [p100-docs/CHANGES.md](p100-docs/CHANGES.md), sections 15-21.
+**Every change with its numbers:** [p100-docs/CHANGES.md](p100-docs/CHANGES.md), sections 15-22.
 **What was learned:** [p100-docs/FINDINGS.md](p100-docs/FINDINGS.md).
 
 Built with Claude Code (AI-assisted). Every commit carries a `Co-Authored-By` trailer, and every number above was

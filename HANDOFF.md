@@ -7,7 +7,7 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
 
 ## Branch `p100-optimizations-keoian` (state 2026-10-24; default branch since 10-22, production on the reference box)
 
-- Branch contents (CHANGES §18-21):
+- Branch contents (CHANGES §18-22):
   - all of the base `p100-optimizations` up to its tip d90ec36a3 (2026-10-17, unchanged since), merged;
   - `tyler-port` and `kv-q8q4-262k-vision1440-q8proj`, both ancestors of this branch now (historical names; work
     happens here);
@@ -41,8 +41,9 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   - JEV off, API key file, alias `qwen3.8-27b`, `--slot-save-path`, 150 W cap, no `GGML_CUDA_P2P`;
   - binaries: `build-vision/bin` built 10-24 from f5fbd2542's code (snapshot `/work/bench/mtp3/bin-r1`),
     `400aac811` included;
-  - rollback: the stop rule off on its own: restart with `STOP_ISO=0 STOP_ISO_THINK=0`. Binaries before the chat tables served every temperature: `/work/bench/mtp3/bin-think/bin/*`
-    (or `LLAMA_SPEC_STOP_ISO_TEMP=0.5,0.9`); without the thinking tables: `/work/bench/mtp3/bin-prod-iso/bin/*`. The binaries before the rule:
+  - rollback: the stop rule off on its own: restart with `STOP_ISO=0 STOP_ISO_THINK=0`. Binaries before the chat
+    tables served every temperature: `/work/bench/mtp3/bin-think/bin/*` (or `LLAMA_SPEC_STOP_ISO_TEMP=0.5,0.9`);
+    without the thinking tables: `/work/bench/mtp3/bin-prod-iso/bin/*`. The binaries before the rule:
     `/work/bench/forks/exp2/bin/*` (c73976485's code). Back to 10-23's production: copy
     `/work/bench/think/bin-prod-0d682248f/*` into `build-vision/bin` and restart with `AR_BF16=0 STOP_ISO=0`. The bf16
     wire off on its own: restart with `AR_BF16=0`;
@@ -58,7 +59,14 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   - Kmic's `tools/gate.sh` stops at a false "fattn-fold-sass.h is stale" on his tip and here (FINDINGS "Ideas from
     other forks"): run its perplexity step directly until the check hashes only the two SASS kernels.
   - Candidates for PRs to Kmic from CHANGES §21: the q4p spill fix (his q4_0 default is the config it speeds up), the
-    sampler prefilter, the `seq_rm` bound and the FILL fix. Not opened.
+    sampler prefilter, the `seq_rm` bound and the FILL fix; from §22, the MTP draft's stop rule. Not opened.
+  - `p100-docs/deploy/start-qwen.sh`'s comment on `STOP_ISO` still names the 0.5-0.9 window; since f5fbd2542 the
+    chat tables serve every T > 0 outside the thinking window (the script's behaviour is right). Fix it with the next
+    start-script change (the box's `/work/start-qwen.sh` must stay identical).
+  - Adaptive-MTP leftovers (branch `mtp-adaptive-research`, FINDINGS "The MTP draft's stop rule"): lenient acceptance
+    (approximate; needs a quality evaluation, never under a grammar) and n-max 16 aborting at warm-up
+    (`GGML_ASSERT(obj_new)`, ggml.c). Deeper drafts and an exact-width verify were measured or simulated: they don't
+    pay.
   - A guard for `LLAMA_THINK_BY_BUDGET` on Apertus, whose on/off reply starts are identical (the splice would leave
     thinking on): offered, not written. Production (Qwen3.8 only) is unaffected.
   - When Kmic merges or changes the PRs: merge his tip (never rebase) and repeat the checks of the 10-21 merge

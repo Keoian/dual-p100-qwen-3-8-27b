@@ -6,7 +6,7 @@
     cd llama.cpp
 
 For the `p100-optimizations-keoian` branch (the default branch of Keoian/dual-p100-qwen-3-8-27b since 2026-10-22,
-which contains `tyler-port`: boards without P2P, a q8_0 K cache, 1440p images, JEV System 1, CHANGES §15-21) clone
+which contains `tyler-port`: boards without P2P, a q8_0 K cache, 1440p images, JEV System 1, CHANGES §15-22) clone
 `-b p100-optimizations-keoian https://github.com/Keoian/dual-p100-qwen-3-8-27b` instead; [deploy/](deploy/README.md)
 has its container, build script (Ninja, ccache; production builds `build-vision`), pinned downloads and start
 scripts. `tools/gate.sh` expects `build-opt` and defaults `MODEL` to Kmic's path, so on that layout run

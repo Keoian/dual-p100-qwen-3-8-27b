@@ -83,9 +83,11 @@ build-vision/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
 
 `GGML_CUDA_AR_BF16_THRESHOLD=1` (`AR_BF16=1`) sends the decode and verify exchanges as bf16 (MTP replies +6.8%, KLD
 +1.1%; `AR_BF16=0` for exact f32). `LLAMA_SPEC_STOP_ISO=0.125` (`STOP_ISO`) and `LLAMA_SPEC_STOP_ISO_THINK=0.15`
-(`STOP_ISO_THINK`) stop the MTP draft by the lookup rule of CHANGES §22, with one pair of tables per thinking mode
-(chat +4.7%, long context +4.8%, thinking +2.9%, exact; `=0` for p-min). With `LLAMA_SAMPLING_BY_MODE=1` the chat endpoints take their sampling defaults
-from the two JSON sets; the CLI `--temp/--top-k/--top-p/--min-p` then only serve `/completion`. Why each setting: [QUICKSTART.md](../QUICKSTART.md)
+(`STOP_ISO_THINK`) stop the MTP draft by the lookup rule of CHANGES §22, with one pair of tables per thinking mode,
+picked by the request's temperature: the thinking tables at 0.95-1.05, the chat tables at every other T > 0, p-min for
+greedy (chat +4.7%, long context +4.8%, thinking +2.9%, T 0.3 / 1.2 +6.6% / +6.1%, exact; `=0` for p-min). With
+`LLAMA_SAMPLING_BY_MODE=1` the chat endpoints take their sampling defaults from the two JSON sets; the CLI
+`--temp/--top-k/--top-p/--min-p` then only serve `/completion`. Why each setting: [QUICKSTART.md](../QUICKSTART.md)
 ("1440p images and a q8_0 K cache", "Switches on this branch").
 
 ## What `start-qwen.sh` runs with its defaults (the earlier JEV setup)
@@ -118,7 +120,7 @@ is no P2P with JEV loaded until a supervised test. Env switches of the script: `
 device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `THINK_BY_BUDGET=0` / `SAMPLING_BY_MODE=0` / `NOTHINK_SAMPLING=<json>` / `THINK_SAMPLING=<json>` (CHANGES §19;
 QUICKSTART "Switches on this branch"), `AR_BF16=0` (exact f32 exchanges; an exported
 `GGML_CUDA_AR_BF16_THRESHOLD` wins over it), `STOP_ISO=0` / `STOP_ISO_THINK=0` (the MTP draft's p-min test for
-thinking-off / thinking requests; exported `LLAMA_SPEC_STOP_ISO*` values win), `ALIAS=`, `API_KEY_FILE=` (no key), `CTX=`, `BUILD=`, `MODEL=`,
+requests outside / inside the thinking window T 0.95-1.05; exported `LLAMA_SPEC_STOP_ISO*` values win), `ALIAS=`, `API_KEY_FILE=` (no key), `CTX=`, `BUILD=`, `MODEL=`,
 `JEV_DIR=`. Why each choice: [QUICKSTART.md](../QUICKSTART.md).
 `start-qwen-vision.sh` (production; copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision`, as in the
 recipe above) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->
@@ -181,4 +183,4 @@ peak ~16.15 GB.
 - `ballast.cu`: holds GPU memory on one device until killed, to test with less VRAM headroom
   (`nvcc -O2 -arch=sm_60 -o ballast ballast.cu`, then `ballast <device> <leave_free_MiB>`).
 
-Records of how these numbers were measured: [CHANGES.md §15-16, §18-21](../CHANGES.md), [FINDINGS.md](../FINDINGS.md).
+Records of how these numbers were measured: [CHANGES.md §15-16, §18-22](../CHANGES.md), [FINDINGS.md](../FINDINGS.md).

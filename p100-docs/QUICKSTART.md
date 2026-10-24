@@ -18,7 +18,7 @@ save/restore", "1440p images and a q8_0 K cache" and "Switches on this branch" b
 | checkpoints / RAM cache | server defaults (32, 8 GiB) | `-ctxcp 32 --cache-ram 24576` | a larger RAM prompt cache on a 48 GB host; on 32 GB use `CTXCP=4 CACHE_RAM=8192` |
 | attention routing | defaults | `GGML_CUDA_FA_VEC_MAX_Q=16 GGML_CUDA_FA_GEMM_MINQ=17` | required with a q8_0 K cache at 262k, else out of memory at depth |
 | exchange wire | f32 | bf16 (`GGML_CUDA_AR_BF16_THRESHOLD=1`, `start-qwen.sh`: `AR_BF16=1`) | MTP replies +6.8% over the x4 link; lossy (KLD +1.1%); `AR_BF16=0` for exact f32 |
-| MTP draft stop | p-min 0.2 | the lookup stop rule: thinking off `LLAMA_SPEC_STOP_ISO=0.125` (`STOP_ISO`), thinking on its own tables `LLAMA_SPEC_STOP_ISO_THINK=0.15` (`STOP_ISO_THINK`) | chat replies +4.7%, long context +4.8%, thinking +2.9%; exact; `=0` for p-min |
+| MTP draft stop | p-min 0.2 | the lookup stop rule, tables picked by the request's temperature: thinking (T 0.95-1.05) its own tables `LLAMA_SPEC_STOP_ISO_THINK=0.15` (`STOP_ISO_THINK`), every other T > 0 the chat tables `LLAMA_SPEC_STOP_ISO=0.125` (`STOP_ISO`); greedy keeps p-min | chat replies +4.7%, long context +4.8%, thinking +2.9%, T 0.3 / 1.2 +6.6% / +6.1%; exact; `=0` for p-min |
 | thinking | template default (on) | `--reasoning off`, `LLAMA_THINK_BY_BUDGET=1` | chat apps that hide reasoning show nothing while it thinks; a toggle reprocesses 21-42 tokens, not the chat |
 | sampling | 1.0 / 0.95 / 20 / 0 | `LLAMA_SAMPLING_BY_MODE=1`: thinking off 0.7 / 0.8 / 20 / 0 with presence 1.5, thinking 1.0 / 0.95 / 20 / 0 | the model card has a separate thinking-off set |
 | access | :8080, no key | :8090, `--api-key-file`, `--alias qwen3.8-27b`, `--slot-save-path` | OpenAI-compatible clients |
