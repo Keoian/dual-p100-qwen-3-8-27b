@@ -86,3 +86,4 @@ The measured rule recovers about a quarter of that.
 | `analysis/` | the analysis scripts |
 | `scripts/` | the suite runner and the test-window scripts (they stop and restore the box's production server) |
 | `suite/prompts.json` | the 72-prompt suite with categories and splits |
+| `slots/` | the long-context slot library's tooling: saved 16k-250k contexts that restore in 2-20 s |

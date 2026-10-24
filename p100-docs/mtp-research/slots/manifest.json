@@ -1,0 +1,163 @@
+{
+ "created": "2026-10-24 15:33:07",
+ "corpus": "corpus.txt",
+ "corpus_sha256": "3370d9b38137f157",
+ "server": "build-vision (code c73976485), production settings: -c 262144 -ctk q8_0 -ctv q4_0 -ub 1024 -b 2048 -np 1 -ctxcp 32, MTP n-max 4 (draft KV q4_0), bf16 wire",
+ "question_for_verify": "In one sentence, what is the last part of the reference document about?",
+ "slots": [
+  {
+   "name": "longctx-16k",
+   "target": 16000,
+   "n_tokens": 15998,
+   "prompt_processed": 15998,
+   "prefill_s": 43.0,
+   "save_s": 1.2,
+   "files": {
+    "longctx-16k.bin": 583273480,
+    "longctx-16k.bin.draft": 18877708,
+    "longctx-16k.bin.spec": 20484,
+    "longctx-16k.bin.ckpt": 313829784
+   },
+   "bytes": 916001456,
+   "prefix_sha256": "e4d940e576d21be5",
+   "messages": "messages-16k.json",
+   "restore_s": 2.0,
+   "n_restored": 15998,
+   "verify_prompt_n": 27,
+   "verify_prompt_ms": 445,
+   "verify_reply": "The last part of the reference document is a Python script that computes per-column summary statistics for a CSV file."
+  },
+  {
+   "name": "longctx-25k",
+   "target": 25000,
+   "n_tokens": 25001,
+   "prompt_processed": 9003,
+   "prefill_s": 26.3,
+   "save_s": 1.6,
+   "files": {
+    "longctx-25k.bin": 823221436,
+    "longctx-25k.bin.draft": 29501248,
+    "longctx-25k.bin.spec": 20484,
+    "longctx-25k.bin.ckpt": 627659560
+   },
+   "bytes": 1480402728,
+   "prefix_sha256": "08f2df56c3e41c46",
+   "messages": "messages-25k.json",
+   "restore_s": 3.2,
+   "n_restored": 25001,
+   "verify_prompt_n": 27,
+   "verify_prompt_ms": 480,
+   "verify_reply": "The last part of the reference document is a Python module that implements a retry decorator with exponential backoff and full jitter to handle transient failur"
+  },
+  {
+   "name": "longctx-32k",
+   "target": 32000,
+   "n_tokens": 32001,
+   "prompt_processed": 7000,
+   "prefill_s": 21.6,
+   "save_s": 1.9,
+   "files": {
+    "longctx-32k.bin": 1009785436,
+    "longctx-32k.bin.draft": 37761248,
+    "longctx-32k.bin.spec": 20484,
+    "longctx-32k.bin.ckpt": 941489336
+   },
+   "bytes": 1989056504,
+   "prefix_sha256": "dfc0d0fc3809f865",
+   "messages": "messages-32k.json",
+   "restore_s": 4.4,
+   "n_restored": 32001,
+   "verify_prompt_n": 27,
+   "verify_prompt_ms": 468,
+   "verify_reply": "The last part of the reference document explains how entropy and the second law of thermodynamics account for the irreversible directionality of time in everyda"
+  },
+  {
+   "name": "longctx-64k",
+   "target": 64000,
+   "n_tokens": 64001,
+   "prompt_processed": 32000,
+   "prefill_s": 109.3,
+   "save_s": 2.7,
+   "files": {
+    "longctx-64k.bin": 1862649436,
+    "longctx-64k.bin.draft": 75521248,
+    "longctx-64k.bin.spec": 20484,
+    "longctx-64k.bin.ckpt": 1255319112
+   },
+   "bytes": 3193510280,
+   "prefix_sha256": "64338868b19a816b",
+   "messages": "messages-64k.json",
+   "restore_s": 7.1,
+   "n_restored": 64001,
+   "verify_prompt_n": 27,
+   "verify_prompt_ms": 544,
+   "verify_reply": "The last part of the reference document is a philosophical discussion about whether machines can truly understand language or are merely engaging in pattern mat"
+  },
+  {
+   "name": "longctx-128k",
+   "target": 128000,
+   "n_tokens": 128001,
+   "prompt_processed": 64000,
+   "prefill_s": 272.0,
+   "save_s": 4.6,
+   "files": {
+    "longctx-128k.bin": 3568377436,
+    "longctx-128k.bin.draft": 151041248,
+    "longctx-128k.bin.spec": 20484,
+    "longctx-128k.bin.ckpt": 1569148888
+   },
+   "bytes": 5288588056,
+   "prefix_sha256": "15e0f9c17d6840d5",
+   "messages": "messages-128k.json",
+   "restore_s": 12.0,
+   "n_restored": 128001,
+   "verify_prompt_n": 27,
+   "verify_prompt_ms": 682,
+   "verify_reply": "The last part of the reference document is a README for an LLaMA.cpp HTTP server that provides a set of LLM REST APIs and a web UI to interact with llama.cpp."
+  },
+  {
+   "name": "longctx-200k",
+   "target": 200000,
+   "n_tokens": 199999,
+   "prompt_processed": 71998,
+   "prefill_s": 391.5,
+   "save_s": 7.0,
+   "files": {
+    "longctx-200k.bin": 5487268132,
+    "longctx-200k.bin.draft": 235998888,
+    "longctx-200k.bin.spec": 20484,
+    "longctx-200k.bin.ckpt": 1882978664
+   },
+   "bytes": 7606266168,
+   "prefix_sha256": "942dcf6d0ea43ef9",
+   "messages": "messages-200k.json",
+   "restore_s": 16.6,
+   "n_restored": 199999,
+   "verify_prompt_n": 27,
+   "verify_prompt_ms": 845,
+   "verify_reply": "The last part of the reference document is a detailed optimization log documenting the process of improving CUDA kernel performance for a specific model on P100"
+  },
+  {
+   "name": "longctx-250k",
+   "target": 250000,
+   "n_tokens": 250001,
+   "prompt_processed": 50002,
+   "prefill_s": 324.1,
+   "save_s": 8.3,
+   "files": {
+    "longctx-250k.bin": 6819921436,
+    "longctx-250k.bin.draft": 295001248,
+    "longctx-250k.bin.spec": 20484,
+    "longctx-250k.bin.ckpt": 2196808440
+   },
+   "bytes": 9311751608,
+   "prefix_sha256": "2915c342f698cd88",
+   "messages": "messages-250k.json",
+   "restore_s": 20.5,
+   "n_restored": 250001,
+   "verify_prompt_n": 27,
+   "verify_prompt_ms": 944,
+   "verify_reply": "The last part of the reference document details a series of optimization attempts and measurements for a llama.cpp fork running on Tesla P100 GPUs, specifically"
+  }
+ ]
+}
