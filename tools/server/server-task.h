@@ -169,6 +169,7 @@ struct server_task {
         int id_slot;
         std::string filename;
         std::string filepath;
+        bool        largest = false; // save: the RAM prompt cache's largest prompt when it is longer than the slot's
     };
     slot_action slot_action;
 

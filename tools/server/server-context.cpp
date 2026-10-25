@@ -2793,6 +2793,29 @@ private:
                     std::string filename = task.slot_action.filename;
                     std::string filepath = task.slot_action.filepath;
 
+                    // "largest": true: when the RAM prompt cache holds a longer prompt than the slot (a chat whose
+                    // state an app's side request moved there), swap it into the slot first, as a request for it
+                    // would, and save that. Lets a restart keep the conversation (/work/bench/prodctl.sh).
+                    if (task.slot_action.largest && prompt_cache) {
+                        const server_prompt_cache_state * best = nullptr;
+                        for (const auto & st : prompt_cache->states) {
+                            if (st.prompt.tokens.size() > slot->prompt.tokens.size() &&
+                                    (best == nullptr || st.prompt.tokens.size() > best->prompt.tokens.size())) {
+                                best = &st;
+                            }
+                        }
+                        if (best != nullptr) {
+                            const server_tokens want = best->prompt.tokens.clone();
+                            SLT_INF(*slot, "slot save: swapping in the cached prompt of %zu tokens (slot holds %zu)\n",
+                                    want.size(), slot->prompt.tokens.size());
+                            slot->prompt_save(*prompt_cache);
+                            if (!slot->prompt_load(*prompt_cache, want)) {
+                                slot->prompt_clear();
+                            }
+                            prompt_cache->update();
+                        }
+                    }
+
                     std::vector<char> packed;
                     try {
                         packed = slot->prompt.tokens.serialize();
@@ -5774,6 +5797,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_save(const ser
         task.slot_action.id_slot  = id_slot;
         task.slot_action.filename = filename;
         task.slot_action.filepath = filepath;
+        task.slot_action.largest  = json_value(request_data, "largest", false);
         rd.post_task(std::move(task));
     }
 
