@@ -39,7 +39,8 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   - `AR_BF16=1` (`GGML_CUDA_AR_BF16_THRESHOLD=1`): the decode and verify exchanges cross PCIe as bf16 (MTP replies
     +6.8%, KLD +1.1%; `AR_BF16=0` for exact f32);
   - JEV off, API key file, alias `qwen3.8-27b`, `--slot-save-path`, 150 W cap, no `GGML_CUDA_P2P`;
-  - binaries: `build-vision/bin` built 10-24 from f5fbd2542's code (snapshot `/work/bench/mtp3/bin-r1`),
+  - binaries: `build-vision/bin` built 10-25 from 7501cce23's code (snapshot `/work/bench/mtp3/bin-r1b`; `bin-r1` is
+    f5fbd2542's),
     `400aac811` included;
   - rollback: the stop rule off on its own: restart with `STOP_ISO=0 STOP_ISO_THINK=0`. Binaries before the chat
     tables served every temperature: `/work/bench/mtp3/bin-think/bin/*` (or `LLAMA_SPEC_STOP_ISO_TEMP=0.5,0.9`);

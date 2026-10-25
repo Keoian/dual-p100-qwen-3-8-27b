@@ -90,6 +90,12 @@ greedy (chat +4.7%, long context +4.8%, thinking +2.9%, T 0.3 / 1.2 +6.6% / +6.1
 `--temp/--top-k/--top-p/--min-p` then only serve `/completion`. Why each setting: [QUICKSTART.md](../QUICKSTART.md)
 ("1440p images and a q8_0 K cache", "Switches on this branch").
 
+**Keeping a chat across restarts.** A restart loses the RAM prompt cache, so the first message after one re-prefills
+the conversation (24k tokens: ~66 s). `POST /slots/0?action=save` with `{"filename": "...", "largest": true}` saves
+the cache's longest prompt even when a chat app's side request (a title, follow-ups) has displaced it from the slot;
+`action=restore` after the restart loads it back, and the next turn processes only its new tokens. On the reference
+box `/work/bench/prodctl.sh` (and `prod-restart.sh`) does this around every planned restart.
+
 ## What `start-qwen.sh` runs with its defaults (the earlier JEV setup)
 
 ```bash
