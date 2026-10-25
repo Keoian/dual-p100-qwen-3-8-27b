@@ -906,8 +906,19 @@ size_t common_spec_block_verify(const std::vector<std::vector<llama_token_data>>
     return tau;
 }
 
+// acc (--spec-accept, per request "speculative.accept"; APPROXIMATE unless exact: changes the output distribution):
+//   exact (default)  the speculative-sampling rule / block verification: output distributed as the target's
+//   escape           keep a drafted token unless the target's own sampler could never emit it at that row
+//                    (p = 0 after its penalties, top-k, top-p, min-p): veto only clear errors
+//   lam:<x>          veto when the target's raw probability (T 1, no penalties, full vocab) of the token is below
+//                    x times that of its top token
+//   esc+<x>          veto on either test
+//   all              never veto: the target only advances its state and writes the token after the draft
+// A veto commits the target's own sample at that row and ends the cycle, as a rejection does; if that sample is the
+// drafted token, drafting continues. Rows under an active grammar or a forcing reasoning budget keep the exact
+// outcome. LLAMA_SPEC_ACCEPT_STATS=1 logs keep/veto counts every 256 vetoed cycles.
 std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft,
-        const std::vector<std::vector<llama_token_data>> & dists, std::mt19937 & rng) {
+        const std::vector<std::vector<llama_token_data>> & dists, std::mt19937 & rng, const common_spec_accept & acc) {
     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
     GGML_ASSERT(dists.size() >= draft.size());
 
@@ -934,7 +945,7 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_s
         return !s || atoi(s) != 0; // on by default; =0 restores the per-token rule
     }();
     const auto & sp = gsmpl->params;
-    if (block_verify && !gsmpl->grmr && !gsmpl->rbudget && sp.penalty_repeat == 1.0f && sp.penalty_freq == 0.0f &&
+    if (block_verify && !acc.approx() && !gsmpl->grmr && !gsmpl->rbudget && sp.penalty_repeat == 1.0f && sp.penalty_freq == 0.0f &&
             sp.penalty_present == 0.0f && sp.dry_multiplier == 0.0f && sp.mirostat == 0) {
         const size_t G = draft.size();
         // target distributions after X^i (i = 0..G) and a token drawn from each
@@ -998,6 +1009,54 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_s
         }
 
         const llama_token_data_array & cur_p = gsmpl->cur_p;
+
+        if (acc.approx()) {
+            static int64_t n_cyc = 0, n_rows = 0, n_keep = 0, n_veto_esc = 0, n_veto_lam = 0, n_forced = 0;
+            static const bool stats = [] { const char * s = getenv("LLAMA_SPEC_ACCEPT_STATS"); return s && atoi(s) != 0; }();
+            const bool forcing = gsmpl->rbudget && common_reasoning_budget_get_state(gsmpl->rbudget) == REASONING_BUDGET_FORCING;
+            bool veto = forcing;
+            bool by_esc = false;
+            if (!forcing && (acc.kind == COMMON_SPEC_ACCEPT_ESCAPE || acc.kind == COMMON_SPEC_ACCEPT_ESC_LAM)) {
+                float p_x = 0.0f;
+                for (size_t j = 0; j < cur_p.size; ++j) {
+                    if (cur_p.data[j].id == draft[i]) {
+                        p_x = cur_p.data[j].p;
+                        break;
+                    }
+                }
+                veto = by_esc = p_x <= 0.0f;
+            }
+            if (!veto && !forcing && (acc.kind == COMMON_SPEC_ACCEPT_LAM || acc.kind == COMMON_SPEC_ACCEPT_ESC_LAM)) {
+                // raw logits: T 1, no penalties, full vocabulary
+                const float * lg = llama_get_logits_ith(ctx, idxs[i]);
+                const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx)));
+                float lmax = lg[0];
+                for (int j = 1; j < n_vocab; ++j) {
+                    lmax = std::max(lmax, lg[j]);
+                }
+                veto = lg[draft[i]] - lmax < logf(acc.lam);
+            }
+            const bool keep = !veto || id == draft[i];
+            n_rows++;
+            n_keep     += keep;
+            n_veto_esc += !keep && by_esc;
+            n_veto_lam += !keep && !by_esc && !forcing;
+            n_forced   += !keep && forcing;
+            if (keep) {
+                common_sampler_accept(gsmpl, draft[i], true);
+                result.push_back(draft[i]);
+                continue;
+            }
+            common_sampler_accept(gsmpl, id, true);
+            result.push_back(id);
+            if (stats && ++n_cyc % 256 == 0) {
+                LOG_INF("spec accept: %lld vetoed cycles, %lld drafted rows: kept %.3f, vetoed escape %.3f, ratio %.3f, forced %.3f\n",
+                        (long long) n_cyc, (long long) n_rows, (double) n_keep / n_rows, (double) n_veto_esc / n_rows,
+                        (double) n_veto_lam / n_rows, (double) n_forced / n_rows);
+            }
+            return result;
+        }
+
         const std::vector<llama_token_data> & q = dists[i];
 
         const auto q_of = [&](llama_token t) {

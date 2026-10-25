@@ -1905,17 +1905,20 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 const float pc_next = p_cum[seq_id]*cur_p->data[0].p;
                 // the request's target temperature picks the tables: the thinking window first, then the chat tables
                 // (their range, or an unknown temperature), else none (p-min)
+                // an approximate accept rule (accept_approx) drafts without the tables and p-min: they were fitted
+                // for the exact rule, and the approximate rules were measured without them
+                const bool  approx    = dparams.at(seq_id).accept_approx;
                 const float t_tgt     = dparams.at(seq_id).target_temp;
-                const bool  iso_think = spec_stop_iso_think > 0.0f &&
+                const bool  iso_think = !approx && spec_stop_iso_think > 0.0f &&
                                         t_tgt >= spec_stop_iso_think_temp.first && t_tgt <= spec_stop_iso_think_temp.second;
-                const bool  iso_chat  = !iso_think && spec_stop_iso > 0.0f &&
+                const bool  iso_chat  = !approx && !iso_think && spec_stop_iso > 0.0f &&
                                         (t_tgt < 0.0f || (t_tgt >= spec_stop_iso_temp.first && t_tgt <= spec_stop_iso_temp.second));
                 const bool  iso_on    = iso_chat || iso_think;
                 const float iso_theta = iso_chat ? spec_stop_iso : spec_stop_iso_think;
                 const float * iso_tq  = iso_chat ? spec_iso_q  : spec_iso_q_think;
                 const float * iso_tp  = iso_chat ? spec_iso_p1 : spec_iso_p1_think;
                 const bool  stop    = (iso_on ? s_iso[seq_id]*spec_iso_lookup(iso_tp, cur_p->data[0].p) < iso_theta
-                                              : cur_p->data[0].p < params.p_min) ||
+                                              : !approx && cur_p->data[0].p < params.p_min) ||
                                       pc_next < p_cum_min(dparams.at(seq_id).pos0);
                 if (stop) {
                     drafting[seq_id] = false;
@@ -1928,7 +1931,74 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 auto & dp = dparams.at(seq_id);
 
                 float q_id = cur_p->data[0].p; // the draft's probability of the token it drafts
-                if (sample_temp > 0.0f) {
+                if (dp.accept_approx && dp.target_temp > 0.0f) {
+                    // an approximate accept rule keeps the draft's own choices: sample each token the way the request
+                    // samples, from dp.target_* (presence penalty over the target's penalty window plus this draft's
+                    // tokens, then top-k, top-p, min-p, temperature: the target chain's order) instead of
+                    // LLAMA_SPEC_SAMPLE_TEMP / LLAMA_SPEC_DRAFT_TOPP. dp.dists records the distribution drawn from
+                    std::vector<llama_token_data> q(cur_p->data, cur_p->data + cur_p->size);
+                    if (dp.target_present != 0.0f && dp.target_pen_last_n != 0) {
+                        // the window the target's penalty sampler holds at this row: its window, then this draft's tokens
+                        std::vector<llama_token> win(dp.pen_window);
+                        win.insert(win.end(), dp.result->begin(), dp.result->end());
+                        const size_t n_last = dp.target_pen_last_n > 0 ? (size_t) dp.target_pen_last_n : win.size();
+                        const size_t w0     = win.size() > n_last ? win.size() - n_last : 0;
+                        for (auto & c : q) {
+                            if (std::find(win.begin() + w0, win.end(), c.id) != win.end()) {
+                                c.logit -= dp.target_present;
+                            }
+                        }
+                        std::stable_sort(q.begin(), q.end(), [](const llama_token_data & a, const llama_token_data & b) { return a.logit > b.logit; });
+                    }
+                    if (dp.target_top_k > 0 && (int32_t) q.size() > dp.target_top_k) {
+                        q.resize(dp.target_top_k);
+                    }
+                    // top-p and min-p on T 1 probabilities, then the temperature
+                    const float l0 = q[0].logit;
+                    double sum = 0.0;
+                    for (auto & c : q) {
+                        sum += expf(c.logit - l0);
+                    }
+                    size_t keep = q.size();
+                    if (dp.target_top_p < 1.0f) {
+                        double cum = 0.0;
+                        for (size_t j = 0; j < q.size(); ++j) {
+                            cum += expf(q[j].logit - l0) / sum;
+                            if (cum >= dp.target_top_p) {
+                                keep = j + 1;
+                                break;
+                            }
+                        }
+                    }
+                    if (dp.target_min_p > 0.0f) {
+                        size_t n_mp = 0;
+                        while (n_mp < q.size() && q[n_mp].logit >= l0 + logf(dp.target_min_p)) {
+                            n_mp++;
+                        }
+                        keep = std::min(keep, std::max<size_t>(n_mp, 1));
+                    }
+                    q.resize(keep);
+                    sum = 0.0;
+                    for (auto & c : q) {
+                        c.p = expf((c.logit - l0) / dp.target_temp);
+                        sum += c.p;
+                    }
+                    for (auto & c : q) {
+                        c.p = (float) (c.p / sum);
+                    }
+                    const double u = std::uniform_real_distribution<double>(0.0, 1.0)(sample_rng);
+                    double acc = 0.0;
+                    size_t k = 0;
+                    for (; k + 1 < q.size(); ++k) {
+                        acc += q[k].p;
+                        if (u < acc) {
+                            break;
+                        }
+                    }
+                    id = q[k].id;
+                    q_id = q[k].p;
+                    dp.dists.push_back(std::move(q));
+                } else if (sample_temp > 0.0f) {
                     // cur_p is sorted by p, i.e. by logit
                     std::vector<llama_token_data> q(cur_p->data, cur_p->data + cur_p->size);
                     const float l0 = q[0].logit;
@@ -2622,6 +2692,40 @@ common_speculative_type common_speculative_type_from_name(const std::string & na
         return COMMON_SPECULATIVE_TYPE_COUNT;
     }
     return it->second;
+}
+
+common_spec_accept common_spec_accept_from_str(const std::string & s) {
+    common_spec_accept a;
+    if (s.empty() || s == "exact") {
+        return a;
+    }
+    if (s == "escape") {
+        a.kind = COMMON_SPEC_ACCEPT_ESCAPE;
+    } else if (s == "all") {
+        a.kind = COMMON_SPEC_ACCEPT_ALL;
+    } else if (s.rfind("lam:", 0) == 0 || s.rfind("esc+", 0) == 0) {
+        char * end = nullptr;
+        const float lam = strtof(s.c_str() + 4, &end);
+        if (end == s.c_str() + 4 || *end != '\0' || !(lam > 0.0f && lam < 1.0f)) {
+            throw std::invalid_argument("speculative accept rule '" + s + "': the threshold must be a number in (0, 1)");
+        }
+        a.kind = s[0] == 'l' ? COMMON_SPEC_ACCEPT_LAM : COMMON_SPEC_ACCEPT_ESC_LAM;
+        a.lam  = lam;
+    } else {
+        throw std::invalid_argument("unknown speculative accept rule '" + s + "' (exact, escape, lam:<x>, esc+<x>, all)");
+    }
+    return a;
+}
+
+std::string common_spec_accept_to_str(const common_spec_accept & a) {
+    switch (a.kind) {
+        case COMMON_SPEC_ACCEPT_EXACT:   return "exact";
+        case COMMON_SPEC_ACCEPT_ESCAPE:  return "escape";
+        case COMMON_SPEC_ACCEPT_LAM:     return string_format("lam:%g", (double) a.lam);
+        case COMMON_SPEC_ACCEPT_ESC_LAM: return string_format("esc+%g", (double) a.lam);
+        case COMMON_SPEC_ACCEPT_ALL:     return "all";
+    }
+    return "unknown";
 }
 
 std::vector<common_speculative_type> common_speculative_types_from_gguf(const std::string & path) {

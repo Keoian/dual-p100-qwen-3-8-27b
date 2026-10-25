@@ -194,6 +194,14 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
     // Speculative decoding params
     //
 
+    add((new field_str("speculative.accept"))
+        ->set_desc("How drafted tokens are accepted: exact (default: output distributed as the model's own sampling), "
+                   "escape (keep a draft unless the model's own sampler could never pick it; approximate, faster), "
+                   "esc+<x> (escape, and also veto drafts below x times the top token's probability), lam:<x>, all")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            ctx.params.speculative.accept = common_spec_accept_from_str(data.at("speculative.accept").get<std::string>());
+        }));
+
     // TODO: to keep things simple, we disable speculative parameter adjustments for now
 #if 0
     // TODO: for now, be able to adjust only the draft-model based speculative parameters

@@ -1460,6 +1460,11 @@ private:
             try {
                 spec.reset(common_speculative_init(params_base.speculative, params_base.n_parallel));
                 spec_reads_prompt = !spec || common_speculative_draft_reads_prompt(spec.get());
+                if (params_base.speculative.accept.approx()) {
+                    SRV_WRN("speculative accept rule '%s' by default (approximate: drafts the model would not have sampled "
+                            "are kept; requests can set \"speculative.accept\": \"exact\")\n",
+                            common_spec_accept_to_str(params_base.speculative.accept).c_str());
+                }
             } catch (const std::exception & e) {
                 SRV_ERR("failed to initialize speculative decoding context: %s\n", e.what());
                 if (params_base.speculative.has_synth()) {
@@ -3422,7 +3427,32 @@ private:
                             /* .prompt   = */ &slot.spec_prompt,
                             /* .result   = */ &slot.spec_draft,
                         };
-                        common_speculative_get_draft_params(spec.get(), slot.id).target_temp = slot.task->params.sampling.temp;
+                        {
+                            auto & dpr = common_speculative_get_draft_params(spec.get(), slot.id);
+                            const auto & sp = slot.task->params.sampling;
+                            dpr.accept_approx     = slot.task->params.speculative.accept.approx();
+                            dpr.target_temp       = sp.temp;
+                            dpr.target_top_k      = sp.top_k;
+                            dpr.target_top_p      = sp.top_p;
+                            dpr.target_min_p      = sp.min_p;
+                            dpr.target_present    = sp.penalty_present;
+                            dpr.target_pen_last_n = sp.penalty_last_n;
+                            // an approximate accept rule with a presence penalty: the target's penalty window (the
+                            // slot's last text tokens, then id_last, which the verify puts at pos0), for the draft to
+                            // sample as the request does. Media positions read as LLAMA_TOKEN_NULL and are skipped, as
+                            // the penalty sampler never saw them
+                            if (dpr.accept_approx && sp.penalty_present != 0.0f && sp.penalty_last_n != 0) {
+                                const int32_t n = sp.penalty_last_n > 0 ? sp.penalty_last_n : 1024;
+                                dpr.pen_window.push_back(slot.sampled);
+                                for (int32_t k = (int32_t) slot.prompt.tokens.size() - 1; k >= 0 && (int32_t) dpr.pen_window.size() < n; --k) {
+                                    const llama_token t = slot.prompt.tokens[k];
+                                    if (t != LLAMA_TOKEN_NULL) {
+                                        dpr.pen_window.push_back(t);
+                                    }
+                                }
+                                std::reverse(dpr.pen_window.begin(), dpr.pen_window.end());
+                            }
+                        }
 
                         drafting.push_back(&slot);
                     }
@@ -4361,7 +4391,7 @@ private:
                     const llama_tokens         draft_real(slot.spec_draft.begin(), slot.spec_draft.begin() + n_real_draft);
                     const std::vector<int32_t> idxs_real(slot.spec_i_batch.begin(), slot.spec_i_batch.begin() + n_real_draft + 1);
                     accepted = common_sampler_sample_and_accept_n_dist(slot.smpl.get(), slot.ctx_tgt, std::vector<int>(idxs_real.begin(), idxs_real.end()),
-                            draft_real, dists, slot.spec_dist_rng);
+                            draft_real, dists, slot.spec_dist_rng, slot.task->params.speculative.accept);
                 } else if (slot.spec_n_real >= 0 && !slot.spec_is_replay && synth_probs.empty()) {
                     // padded verify: only the first spec_n_real drafts (and their outputs) are real
                     const int nr = slot.spec_n_real;

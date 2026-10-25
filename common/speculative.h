@@ -23,6 +23,10 @@ enum common_speculative_type common_speculative_type_from_name(const std::string
 // convert type to string
 std::string common_speculative_type_to_str(enum common_speculative_type type);
 
+// accept rules: "exact", "escape", "lam:<x>", "esc+<x>" (x in (0, 1)), "all". Throws std::invalid_argument
+common_spec_accept common_spec_accept_from_str(const std::string & s);
+std::string        common_spec_accept_to_str(const common_spec_accept & a);
+
 // return the max number of draft tokens based on the speculative parameters
 int32_t common_speculative_n_max(const common_params_speculative * spec);
 
@@ -79,6 +83,18 @@ struct common_speculative_draft_params {
     // the target sampler's temperature for this sequence's request (< 0: unknown). LLAMA_SPEC_STOP_ISO applies only
     // when it lies in LLAMA_SPEC_STOP_ISO_TEMP (or is unknown)
     float target_temp = -1.0f;
+
+    // the request accepts drafts by an approximate rule (common_spec_accept::approx): the MTP draft then samples each
+    // token with the request's own settings (below) and drafts without the stop tables or p-min, as measured
+    bool accept_approx = false;
+
+    // the rest of the request's sampler settings, for accept_approx (drafts sampled the way the target samples)
+    int32_t      target_top_k     = 0;
+    float        target_top_p     = 1.0f;
+    float        target_min_p     = 0.0f;
+    float        target_present   = 0.0f;
+    int32_t      target_pen_last_n = 0;
+    llama_tokens pen_window       = {}; // the target's penalty window up to and including id_last, oldest first
 };
 
 // whether any configured draft type reads common_speculative_draft_params::prompt when drafting (the

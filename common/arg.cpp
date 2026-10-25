@@ -4245,6 +4245,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_P_MIN"));
     add_opt(common_arg(
+        {"--spec-accept"}, "RULE",
+        "how sampled drafts are accepted, the default for requests (per request: \"speculative.accept\"):\n"
+        "exact: output distributed as the target's own sampling (default)\n"
+        "escape: keep a draft unless the target's own sampler could never pick it (approximate)\n"
+        "esc+<x>: escape, and also veto drafts below x times the top token's raw probability (approximate)\n"
+        "lam:<x>, all: research",
+        [](common_params & params, const std::string & value) {
+            params.speculative.accept = common_spec_accept_from_str(value);
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_ACCEPT"));
+    add_opt(common_arg(
         {"--spec-draft-backend-sampling"},
         {"--no-spec-draft-backend-sampling"},
         string_format("offload draft sampling to the backend (default: %s)",

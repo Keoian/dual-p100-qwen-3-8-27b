@@ -105,7 +105,8 @@ size_t common_spec_block_verify(const std::vector<std::vector<llama_token_data>>
                                 std::mt19937 & rng, llama_token & y, std::vector<double> & keep);
 
 std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft,
-        const std::vector<std::vector<llama_token_data>> & dists, std::mt19937 & rng);
+        const std::vector<std::vector<llama_token_data>> & dists, std::mt19937 & rng,
+        const common_spec_accept & acc = {}); // acc: how drafts are accepted (exact by default), see sampling.cpp
 
 uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl);
 
