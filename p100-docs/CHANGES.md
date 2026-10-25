@@ -819,8 +819,8 @@ simulated).
 
 Every rule so far kept the output distributed exactly as the target's own sampling. These are opt-in rules that
 let the MTP head write most of the text and have the 27B veto only what it would never have written. They change
-the output distribution, so the default stays `exact`. A request picks its rule with `"speculative.accept"` in the
-JSON body; `--spec-accept RULE` (`LLAMA_ARG_SPEC_ACCEPT`) sets the default for requests that don't.
+the output distribution, so the server's default stays `exact`. A request picks its rule with `"speculative.accept"`
+in the JSON body; `--spec-accept RULE` (`LLAMA_ARG_SPEC_ACCEPT`) sets the default for requests that don't.
 
 | commit | change |
 |---|---|
@@ -865,7 +865,7 @@ prompts and seeds; MTP n-max 4):
 a different token than the target alone would have sampled (total variation per position); the tokens kept are
 nearly as likely under the target as its own picks (excess 0.02 / 0.09 nats). The tests above can't rule out a
 loss of a few points on hard problems, which the literature reports for this family of rules ("truncation-based
-verification", arXiv 2607.26627), so `exact` stays the default and a client can ask for it per request.
+verification", arXiv 2607.26627), so the server's default stays `exact` and a client can ask for it per request.
 
 **Prior art.** `escape` is the nucleus-acceptance idea of Nucleus Speculative Decoding (arXiv 2610.07822); the
 ratio test is the margin rule of speculative cascades (arXiv 2405.19261) and AdaptiveSpec (arXiv 2609.02897).
@@ -876,6 +876,12 @@ p/q rule simulated no better than `esc+<x>` at the same speed.
 prompts, before and after `escape` requests; `"escape"` per request reproduced the research build's runs on all 72
 chat prompts (same tokens and acceptance; texts differ only in the random tool-call ids); `--spec-accept escape`
 matched per-request `escape`, and `"exact"` under it matched production; a bad value gets HTTP 400.
+
+**Production runs `escape` (10-25).** `start-qwen-vision.sh` passes `--spec-accept escape` (`SPEC_ACCEPT`, through
+`start-qwen.sh`, whose own default is `exact`); `start-qwen-vision-exact.sh` is the same setup with `exact`. The
+operator chose it after a blind A/B of 16 reply pairs against the exact rule: `all` lost all 4 of its pairs; `escape`
+(8 pairs, chat) and `esc+0.05` (4, thinking) were not told apart from it (one pair preferred each way, 10 unsure).
+Live after the deploy, one 250-token chat reply, same seed: default (`escape`) 67.3 t/s, `"exact"` 58.5.
 
 ## Known gaps
 

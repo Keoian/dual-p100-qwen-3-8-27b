@@ -81,13 +81,19 @@ export GGML_CUDA_AR_BF16_THRESHOLD=${GGML_CUDA_AR_BF16_THRESHOLD:-$AR_BF16}
 STOP_ISO=${STOP_ISO:-0.125}
 STOP_ISO_THINK=${STOP_ISO_THINK:-0.15}
 export LLAMA_SPEC_STOP_ISO=${LLAMA_SPEC_STOP_ISO:-$STOP_ISO} LLAMA_SPEC_STOP_ISO_THINK=${LLAMA_SPEC_STOP_ISO_THINK:-$STOP_ISO_THINK}
+# SPEC_ACCEPT: how the target accepts the MTP draft's tokens for requests that don't send "speculative.accept"
+# (--spec-accept, CHANGES §23). exact: the speculative-sampling rule, output distributed as the model's own sampling.
+# escape: keep a drafted token unless the model's own sampler gives it probability 0 (after the request's penalties,
+# top-k, top-p, min-p). APPROXIMATE; 10-25: chat 51.87 -> 59.02 t/s (+13.8%), thinking +31.5%, long context +12-14%,
+# no measurable quality loss in the tests. Requests under escape draft without the stop tables above (fit for exact).
+SPEC_ACCEPT=${SPEC_ACCEPT:-exact}
 # CUDA graphs for the single-token MTP draft steps only; sampled drafts verified with the speculative-sampling rule
 export GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20
 export LLAMA_THINK_BY_BUDGET="$THINK_BY_BUDGET" LLAMA_SAMPLING_BY_MODE="$SAMPLING_BY_MODE" LLAMA_SAMPLING_NOTHINK="$NOTHINK_SAMPLING" LLAMA_SAMPLING_THINK="$THINK_SAMPLING"
 exec "$BUILD/bin/llama-server" -m "$MODEL" \
   -ngl 99 -sm tensor -fa 1 -ctk "$CTK" -ctv "$CTV" \
   -c "$CTX" -b "$NBATCH" -ub "${UB:-2048}" -np 1 -ctxcp "$CTXCP" "${CACHE[@]}" \
-  --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 \
+  --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 --spec-accept "$SPEC_ACCEPT" \
   -ngld 99 -ubd 64 -ctkd q4_0 -ctvd q4_0 \
   --alias "$ALIAS" --jinja --reasoning "$REASONING" --temp 0.7 --top-k 20 --top-p 0.8 --min-p 0.0 \
   --slot-save-path /work/slots "${VISION[@]}" "${AUTH[@]}" "${JEVARGS[@]}" \

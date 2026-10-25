@@ -9,8 +9,8 @@ NVIDIA runtime. The older setup with JEV-27B System 1 decisions (`POST /v1/decid
 
 Files here: `Dockerfile`, `run-container.sh` (host), `unraid-user-script.sh` or the optional
 `unraid-user-script-stop-others.sh` (host, at array start), `build.sh`,
-`fetch.sh`, `start-qwen.sh`, `start-qwen-vision.sh`, `verify.sh` (inside the container), `SHA256SUMS`, and `diag/`
-(test tools, below).
+`fetch.sh`, `start-qwen.sh`, `start-qwen-vision.sh`, `start-qwen-vision-exact.sh`, `verify.sh` (inside the container),
+`SHA256SUMS`, and `diag/` (test tools, below).
 
 ## Recipe
 
@@ -44,7 +44,7 @@ D=/work/src/llama.cpp/p100-docs/deploy
 bash $D/build.sh build-vision                   # ~60-90 min cold on 4 cores, sm_60 only
 bash $D/fetch.sh                                # model, Q8_0 projector, JEV files (pinned), sha256 check
 umask 077; openssl rand -hex 32 > /work/qwen-api-keys   # one key per line, '#' lines ignored; never commit it
-cp $D/start-qwen.sh $D/start-qwen-vision.sh /work/      # the vision script runs start-qwen.sh with its settings
+cp $D/start-qwen*.sh /work/                    # the vision scripts run start-qwen.sh with their settings
 setsid nohup bash /work/start-qwen-vision.sh > /work/serve-8090.log 2>&1 &
 until curl -sf localhost:8090/health; do sleep 5; done   # ~1 min to load
 bash $D/verify.sh
@@ -73,7 +73,8 @@ LLAMA_SAMPLING_THINK='{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"pr
 build-vision/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
   -ngl 99 -sm tensor -fa 1 -ctk q8_0 -ctv q4_0 \
   -c 262144 -b 2048 -ub 1024 -np 1 -ctxcp 32 --cache-ram 24576 \
-  --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 -ngld 99 -ubd 64 -ctkd q4_0 -ctvd q4_0 \
+  --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 --spec-accept escape \
+  -ngld 99 -ubd 64 -ctkd q4_0 -ctvd q4_0 \
   --alias qwen3.8-27b --jinja --reasoning off --temp 0.7 --top-k 20 --top-p 0.8 --min-p 0.0 \
   --slot-save-path /work/slots \
   --mmproj /work/models-vision/mmproj-Qwen3.8-27B-Q8_0.gguf --image-max-tokens 3600 -mmdev CUDA1 \
@@ -85,7 +86,11 @@ build-vision/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
 +1.1%; `AR_BF16=0` for exact f32). `LLAMA_SPEC_STOP_ISO=0.125` (`STOP_ISO`) and `LLAMA_SPEC_STOP_ISO_THINK=0.15`
 (`STOP_ISO_THINK`) stop the MTP draft by the lookup rule of CHANGES §22, with one pair of tables per thinking mode,
 picked by the request's temperature: the thinking tables at 0.95-1.05, the chat tables at every other T > 0, p-min for
-greedy (chat +4.7%, long context +4.8%, thinking +2.9%, T 0.3 / 1.2 +6.6% / +6.1%, exact; `=0` for p-min). With
+greedy (chat +4.7%, long context +4.8%, thinking +2.9%, T 0.3 / 1.2 +6.6% / +6.1%, exact; `=0` for p-min).
+`--spec-accept escape` (`SPEC_ACCEPT`) keeps a drafted token unless the model's own sampler gives it probability 0:
+APPROXIMATE, chat +13.8%, thinking +31.5%, long context +12-14% (CHANGES §23); a request sends
+`"speculative.accept": "exact"` for the model's own sampling, and only such requests use the stop tables.
+`start-qwen-vision-exact.sh` runs this same setup with `exact` as the default. With
 `LLAMA_SAMPLING_BY_MODE=1` the chat endpoints take their sampling defaults from the two JSON sets; the CLI
 `--temp/--top-k/--top-p/--min-p` then only serve `/completion`. Why each setting: [QUICKSTART.md](../QUICKSTART.md)
 ("1440p images and a q8_0 K cache", "Switches on this branch").
@@ -107,7 +112,8 @@ LLAMA_SAMPLING_THINK='{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"pr
 build-exp/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
   -ngl 99 -sm tensor -fa 1 -ctk q4_0 -ctv q4_0 \
   -c 262144 -b 32768 -ub 2048 -np 1 -ctxcp 4 \
-  --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 -ngld 99 -ubd 64 -ctkd q4_0 -ctvd q4_0 \
+  --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 --spec-accept exact \
+  -ngld 99 -ubd 64 -ctkd q4_0 -ctvd q4_0 \
   --alias qwen3.8-27b --jinja --reasoning off --temp 0.7 --top-k 20 --top-p 0.8 --min-p 0.0 \
   --slot-save-path /work/slots \
   --mmproj /work/models/mmproj-F16.gguf --image-max-tokens 1024 -mmdev CUDA1 \
@@ -126,7 +132,7 @@ is no P2P with JEV loaded until a supervised test. Env switches of the script: `
 device), `MMPROJ=` (text only), `IMAGE_MAX_TOKENS=` (no cap), `REASONING=auto`, `THINK_BY_BUDGET=0` / `SAMPLING_BY_MODE=0` / `NOTHINK_SAMPLING=<json>` / `THINK_SAMPLING=<json>` (CHANGES §19;
 QUICKSTART "Switches on this branch"), `AR_BF16=0` (exact f32 exchanges; an exported
 `GGML_CUDA_AR_BF16_THRESHOLD` wins over it), `STOP_ISO=0` / `STOP_ISO_THINK=0` (the MTP draft's p-min test for
-requests outside / inside the thinking window T 0.95-1.05; exported `LLAMA_SPEC_STOP_ISO*` values win), `ALIAS=`, `API_KEY_FILE=` (no key), `CTX=`, `BUILD=`, `MODEL=`,
+requests outside / inside the thinking window T 0.95-1.05; exported `LLAMA_SPEC_STOP_ISO*` values win), `SPEC_ACCEPT=escape` (the MTP accept rule for requests that don't choose one; default exact, CHANGES §23), `ALIAS=`, `API_KEY_FILE=` (no key), `CTX=`, `BUILD=`, `MODEL=`,
 `JEV_DIR=`. Why each choice: [QUICKSTART.md](../QUICKSTART.md).
 `start-qwen-vision.sh` (production; copy it next to `start-qwen.sh`; needs `bash $D/build.sh build-vision`, as in the
 recipe above) runs the full 262k context without JEV, with a q8_0 K / q4_0 V cache (KLD vs f16 0.00274 ->
