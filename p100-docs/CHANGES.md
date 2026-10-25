@@ -815,6 +815,68 @@ simulated).
 `STOP_ISO=0` (`LLAMA_SPEC_STOP_ISO=0`) restores p-min for every request outside the thinking window,
 `STOP_ISO_THINK=0` for thinking ones, and `LLAMA_SPEC_STOP_ISO_TEMP=0.5,0.9` the previous temperature window.
 
+## 23. Approximate accept rules for the MTP draft, chosen per request (2026-10-25)
+
+Every rule so far kept the output distributed exactly as the target's own sampling. These are opt-in rules that
+let the MTP head write most of the text and have the 27B veto only what it would never have written. They change
+the output distribution, so the default stays `exact`. A request picks its rule with `"speculative.accept"` in the
+JSON body; `--spec-accept RULE` (`LLAMA_ARG_SPEC_ACCEPT`) sets the default for requests that don't.
+
+| commit | change |
+|---|---|
+| `09a243185` | `--spec-accept` and the per-request `"speculative.accept"` field: `exact` (default), `escape`, `esc+<x>`, `lam:<x>`, `all` |
+
+| rule | a drafted token is kept unless | verdict |
+|---|---|---|
+| `exact` | the speculative-sampling rule rejects it (or block verification, where it applies) | output = the target's |
+| `escape` | the target's own sampler gives it probability 0 at that row (after the request's penalties, top-k, top-p, min-p) | recommended approximate rule |
+| `esc+<x>` | as `escape`, or its raw (T 1) probability is below x times the target's top token's | a little slower, no measurable difference |
+| `lam:<x>` | only the ratio test | research |
+| `all` | never | research: measured broken |
+
+A veto commits the target's own sample at that row and ends the cycle, as a rejection does. Rows under an active
+grammar (tool calls) or a forcing reasoning budget keep the exact outcome. A request with an approximate rule also
+drafts differently: each MTP token is sampled with the request's own settings (presence penalty over the target's
+window, top-k, top-p, min-p, temperature), and the draft runs without the stop tables (§22) and p-min, which were
+fit for the exact rule. That is the configuration measured below.
+
+**Measured** (production's setup, overnight windows V1-V4, 10-25; `escape` vs production's exact rule, same
+prompts and seeds; MTP n-max 4):
+
+| workload | exact | `escape` | gain |
+|---|---|---|---|
+| thinking-off chat, 72 prompts, 300-token cap | 51.87 t/s | 59.02 | +13.8% |
+| thinking on, `reasoning_effort` medium, 72 prompts | 51.49 | 67.73 | +31.5% |
+| long context 32k / 64k / 128k (saved slots, 8 questions each) | 53.21 / 48.34 / 41.17 | 59.42 / 55.19 / 46.30 | +11.7 / +14.2 / +12.5% |
+| thinking on, no effort (block verify), 24 hard math problems x 2 seeds | 57.24 | 70.34 | +22.9% (answers 1.21x faster) |
+
+| quality check | exact | `escape` |
+|---|---|---|
+| chat, 30 coding tasks x 5 seeds (unit tests) | 142/150 | 141/150 |
+| chat, 40 math problems x 5 seeds | 148/200 | 154/200 |
+| thinking (medium), 20 code + 20 math + 20 JSON | 58/60 | 58/60 |
+| thinking (no budget), 24 hard math problems x 2 seeds | 36/48 | 35/48 |
+| thinking length, paired ratio per item (hard math) | 1 | 1.02 (0.93-1.13) |
+
+`all` passed 18 of 90 scored chat tasks (exact: 76) and ran 46 replies into the length cap. `esc+0.1` in chat and
+`esc+0.05` in thinking measured +11.0% / +24.2% with pass rates within noise of `escape`.
+
+**What it gives up.** Simulated on traced cycles, at least ~11% (chat) / ~18% (thinking) of drafted positions get
+a different token than the target alone would have sampled (total variation per position); the tokens kept are
+nearly as likely under the target as its own picks (excess 0.02 / 0.09 nats). The tests above can't rule out a
+loss of a few points on hard problems, which the literature reports for this family of rules ("truncation-based
+verification", arXiv 2607.26627), so `exact` stays the default and a client can ask for it per request.
+
+**Prior art.** `escape` is the nucleus-acceptance idea of Nucleus Speculative Decoding (arXiv 2610.07822); the
+ratio test is the margin rule of speculative cascades (arXiv 2405.19261) and AdaptiveSpec (arXiv 2609.02897).
+Upstream llama.cpp has only exact rules. Cactus-style overshoot suppression (arXiv 2604.04987) and the lenient
+p/q rule simulated no better than `esc+<x>` at the same speed.
+
+**Validated with `09a243185`** (10-25): requests without the field were byte-identical to production on 9 of 9
+prompts, before and after `escape` requests; `"escape"` per request reproduced the research build's runs on all 72
+chat prompts (same tokens and acceptance; texts differ only in the random tool-call ids); `--spec-accept escape`
+matched per-request `escape`, and `"exact"` under it matched production; a bad value gets HTTP 400.
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,

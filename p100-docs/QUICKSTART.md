@@ -283,6 +283,7 @@ for A/B tests, the server ones change behaviour. Where `start-qwen.sh` sets one,
 | `LLAMA_SPEC_STOP_ISO_TEMP` | `0.001,1e9` (any positive temperature) | the target temperatures the chat tables apply to, after the thinking window; outside both (greedy) the p-min test. Tables recomputed for 480 settings stayed within ~0.1% of the two sets; T 0.3 / 1.2 measured +6.6% / +6.1% over p-min. `0.5,0.9` was the window before f5fbd2542 |
 | `LLAMA_SPEC_STOP_ISO_THINK` | 0 (off) (`start-qwen.sh`: `STOP_ISO_THINK`, 0.15) | `=<theta>`: the stop rule with tables fit on thinking-on cycles, for requests in `LLAMA_SPEC_STOP_ISO_THINK_TEMP`. Exact; thinking replies +2.9% at 0.15 |
 | `LLAMA_SPEC_STOP_ISO_THINK_TEMP` | `0.95,1.05` | the target temperatures the thinking tables apply to |
+| `--spec-accept` (`LLAMA_ARG_SPEC_ACCEPT`), per request `"speculative.accept"` | `exact` | how drafted tokens are accepted (CHANGES §23). `escape`: keep the MTP's token unless the model's own sampler could never pick it. APPROXIMATE; chat +13.8%, thinking +31.5%, long context +12.5%, no measurable quality loss in the tests. `esc+<x>` adds a ratio veto; a request sends `exact` when a reply must be the model's own sampling |
 
 ## Benchmarking
 
