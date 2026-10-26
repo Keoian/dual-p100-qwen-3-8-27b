@@ -883,6 +883,22 @@ operator chose it after a blind A/B of 16 reply pairs against the exact rule: `a
 (8 pairs, chat) and `esc+0.05` (4, thinking) were not told apart from it (one pair preferred each way, 10 unsure).
 Live after the deploy, one 250-token chat reply, same seed: default (`escape`) 67.3 t/s, `"exact"` 58.5.
 
+**Production runs `esc+0.2` (10-26).** The operator asked for a rule at least as careful as the model's own sampling.
+Measured (window L1, production's setup, 72 prompts per mode, same prompts and seeds, vs exact; drift = total
+variation from the model's own sampling per committed token, logged with `LLAMA_SPEC_ACCEPT_STATS=1`):
+
+| rule | chat | thinking (medium) |
+|---|---|---|
+| `escape` | +14.3%, drift 7.8% | +31.3%, drift 10.9% |
+| `esc+0.1` | +8.4%, drift 7.3% | +14.5%, drift 9.2% |
+| `esc+0.2` | +6.8%, drift 6.5% | +6.9%, drift 8.3% |
+
+Simulated on the recorded traces, against the model's own sampling at the same positions: `esc+0.2` writes no more
+rare words (ones the model picks < 5% of the time; chat 8 per 1k, the same; thinking 22 vs 37) and no more words off
+the model's top choice (chat 14.8%, the same; thinking 20.6% vs 21.8%) than the model itself; `escape` writes more
+(chat 13 per 1k and 16.1%, thinking 54 and 25.3%). Its drift is sideways (the MTP head's choice among plausible
+words) and a temperature change does not offset it. `start-qwen-vision.sh` passes `--spec-accept esc+0.2`.
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,
