@@ -8,11 +8,13 @@
 #   - -ctxcp 32, --cache-ram 24576 (more prompt snapshots in host RAM, see below), -b 2048 (fast cancellation)
 #   - GGML_CUDA_FA_VEC_MAX_Q / GGML_CUDA_FA_GEMM_MINQ: 6-16 token batches to the vec kernel, 17+ to the GEMM path, so no
 #     batch reaches the tile kernel's whole-cache f16 conversion (which grows with depth and ran out of memory at 255k)
-#   - MTP accept rule esc+0.2 (SPEC_ACCEPT, --spec-accept; CHANGES §23): APPROXIMATE, escape plus a veto of drafts the
-#     27B rates under 0.2x its top choice; chat +6.8%, thinking +6.9% (10-26), and (simulated) no more rare words or
-#     off-top picks than the model's own sampling. A request sends "speculative.accept": "exact" for the model's own
-#     sampling or "escape" for the faster rule (+14% / +31%). start-qwen-vision-exact.sh is this setup with exact as
-#     the default (production ran escape 10-25 to 10-26, esc+0.2 since)
+#   - MTP accept rule ratio:1.5 (SPEC_ACCEPT, --spec-accept; CHANGES §24): APPROXIMATE but bounded. A drafted token is
+#     kept with probability min(1, 1.5 p/q) and a rejection draws from the exact residual, so no token is written more
+#     than 1.5x as often as under the 27B's own sampling (esc+0.2 had no such bound: from the 10-28 "stepfather" slip it
+#     wrote the drafter's stock phrase 2-3x as often). 10-29, 72 prompts each: thinking +7.6%, chat +4.1% over exact
+#     (esc+0.2 +9.6% / +10.1%). A request sends "speculative.accept": "exact" for the model's own sampling or "esc+0.2"
+#     for the previous default. start-qwen-vision-exact.sh is this setup with exact as the default (production ran
+#     escape 10-25 to 10-26, esc+0.2 10-26 to 10-29, ratio:1.5 since)
 # Measured 10-18 (P100 x2, 150 W, build-vision): gate PPL 2.6064, KLD vs f16 cache 0.00116 (q4_0/q4_0: 0.00274),
 # vision suite 0.935 (BF16 projector 0.938); Ember 10 turns at 25k: TTFT median 474 ms, decode 36.5 t/s; fill to 255k
 # 358 -> 144 t/s (q4_0/q4_0 at -ub 2048: 386 -> 144); 1440p screenshot at 258,866 tokens: prompt 31.5 s, decode 27.8 t/s,
@@ -31,5 +33,5 @@ export CTXCP=${CTXCP:-32} CACHE_RAM=${CACHE_RAM:-24576}
 # -b 2048: a dropped client frees the server in ~2 s instead of ~33 s (10-21, 64k prompt dropped after 60 s); greedy output,
 # MTP draft counts and speed at 112k context byte-identical to -b 32768
 export NBATCH=${NBATCH:-2048}
-export SPEC_ACCEPT=${SPEC_ACCEPT:-esc+0.2}
+export SPEC_ACCEPT=${SPEC_ACCEPT:-ratio:1.5}
 exec bash "$(dirname "$0")/start-qwen.sh" "$@"

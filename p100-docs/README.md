@@ -36,8 +36,8 @@ separate context with its LoRA; off in its production setup since §18), and fix
 the softmax race (Caveats below). Later: a q8_0 K / q4_0 V cache at the full 262k with 1440p images and the Q8_0
 projector (§18), thinking toggles that keep the prompt cache and cheaper repetition penalties (§19, §21), and a
 learned stop rule for the MTP draft (§22), and opt-in approximate accept rules for the MTP draft, chosen per
-request (§23; off by default). The root [README](../README.md) leads with its production numbers.
-[CHANGES.md §15-23](CHANGES.md) has the commits and
+request (§23; off by default), with a bounded one, `ratio:<c>` (§24). The root [README](../README.md) leads with its
+production numbers. [CHANGES.md §15-24](CHANGES.md) has the commits and
 numbers and the PRs to Kmic-68's `p100-optimizations` (#5-#16), [FINDINGS.md](FINDINGS.md) what worked and what
 didn't, [QUICKSTART.md](QUICKSTART.md) the serving notes, and [deploy/](deploy/README.md) the recipe to bring the
 whole production setup up on another machine.

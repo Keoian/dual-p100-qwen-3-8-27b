@@ -86,6 +86,8 @@ export LLAMA_SPEC_STOP_ISO=${LLAMA_SPEC_STOP_ISO:-$STOP_ISO} LLAMA_SPEC_STOP_ISO
 # escape: keep a drafted token unless the model's own sampler gives it probability 0 (after the request's penalties,
 # top-k, top-p, min-p). APPROXIMATE; 10-25: chat 51.87 -> 59.02 t/s (+13.8%), thinking +31.5%, long context +12-14%,
 # no measurable quality loss in the tests. Requests under escape draft without the stop tables above (fit for exact).
+# ratio:<c>[:<C>:<N>]: keep a draft with probability min(1, c p/q), else the exact residual: no token more than c times as
+# likely as the model's own sampling (CHANGES §24; start-qwen-vision.sh: ratio:1.5). Also drafts without the stop tables.
 SPEC_ACCEPT=${SPEC_ACCEPT:-exact}
 # CUDA graphs for the single-token MTP draft steps only; sampled drafts verified with the speculative-sampling rule
 export GGML_CUDA_GRAPHS_PRE_VOLTA=3 LLAMA_SPEC_SAMPLE_TEMP=1.0 LLAMA_SPEC_DRAFT_TOPK=20

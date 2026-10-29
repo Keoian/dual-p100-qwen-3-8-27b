@@ -73,7 +73,7 @@ LLAMA_SAMPLING_THINK='{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"pr
 build-vision/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
   -ngl 99 -sm tensor -fa 1 -ctk q8_0 -ctv q4_0 \
   -c 262144 -b 2048 -ub 1024 -np 1 -ctxcp 32 --cache-ram 24576 \
-  --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 --spec-accept esc+0.2 \
+  --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.2 --spec-accept ratio:1.5 \
   -ngld 99 -ubd 64 -ctkd q4_0 -ctvd q4_0 \
   --alias qwen3.8-27b --jinja --reasoning off --temp 0.7 --top-k 20 --top-p 0.8 --min-p 0.0 \
   --slot-save-path /work/slots \
@@ -87,10 +87,11 @@ build-vision/bin/llama-server -m /work/models/Qwen3.8-27B-UD-Q6_K.gguf \
 (`STOP_ISO_THINK`) stop the MTP draft by the lookup rule of CHANGES §22, with one pair of tables per thinking mode,
 picked by the request's temperature: the thinking tables at 0.95-1.05, the chat tables at every other T > 0, p-min for
 greedy (chat +4.7%, long context +4.8%, thinking +2.9%, T 0.3 / 1.2 +6.6% / +6.1%, exact; `=0` for p-min).
-`--spec-accept esc+0.2` (`SPEC_ACCEPT`) keeps a drafted token unless the model's own sampler gives it probability 0
-or the model rates it under 0.2 times its top choice: APPROXIMATE, chat +6.8%, thinking +6.9%, no more rare words than
-the model's own sampling (simulated; CHANGES §23); a request sends `"speculative.accept": "exact"` for the model's own
-sampling or `"escape"` for the faster rule (+14% / +31%), and only exact requests use the stop tables.
+`--spec-accept ratio:1.5` (`SPEC_ACCEPT`) keeps a drafted token with probability min(1, 1.5 p/q) and draws a
+rejection from the exact residual: APPROXIMATE but bounded, no token more than 1.5 times as likely as under the model's
+own sampling; thinking +7.6%, chat +4.1% (CHANGES §24). A request sends `"speculative.accept": "exact"` for the model's
+own sampling or `"esc+0.2"` for the previous default (+9.6% / +10.1%, unbounded), and only exact requests use the stop
+tables.
 `start-qwen-vision-exact.sh` runs this same setup with `exact` as the default. With
 `LLAMA_SAMPLING_BY_MODE=1` the chat endpoints take their sampling defaults from the two JSON sets; the CLI
 `--temp/--top-k/--top-p/--min-p` then only serve `/completion`. Why each setting: [QUICKSTART.md](../QUICKSTART.md)

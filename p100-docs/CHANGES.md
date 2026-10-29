@@ -899,6 +899,61 @@ the model's top choice (chat 14.8%, the same; thinking 20.6% vs 21.8%) than the 
 (chat 13 per 1k and 16.1%, thinking 54 and 25.3%). Its drift is sideways (the MTP head's choice among plausible
 words) and a temperature change does not offset it. `start-qwen-vision.sh` passes `--spec-accept esc+0.2`.
 
+## 24. A bounded accept rule for the MTP draft: `ratio:<c>` (2026-10-29)
+
+**Why.** The §23 veto rules keep the MTP head's token wherever the model allows it, so the output follows the head's
+preference among plausible tokens. A stock phrase the shallow head is sure of can come out several times as often as
+under the model's own sampling, and the rare-word and off-top checks of §23 cannot see it: the phrase is made of top
+tokens. A logic puzzle answered wrongly in thinking on 10-28 showed it. From the point where the model slipped
+("Riley's father is your stepfather"), `esc+0.2` wrote the slip about 2-3 times as often as the model would (resampled
+from the recovered text: 15.7% vs 6.9% under `exact`, 350 runs per rule over two sessions).
+
+**Rule.** `ratio:<c>` keeps a drafted token y, drawn from the draft distribution q, with probability
+min(1, c p(y) / q(y)), and draws a rejection from the exact residual (p - q)+. p is the model's own sampler output at
+the row. Every token is then written with probability r(y) = min(q, c p) + R (p - q)+ / Z (R = 1 - sum min(q, c p),
+Z = sum (p - q)+), and r(y) <= c p(y) for every token, whatever the draft proposes. Tokens the sampler forbids are never
+written; c = 1 is the exact rule. Each token of a phrase can still gain up to c, so `ratio:<c>:<C>:<N>` adds a phrase
+budget. Every run of at most N consecutive written tokens is at most C times as likely as under the model's own
+sampling from the same prefix: each row's cap is lowered by the boost the previous N - 1 tokens used. Like the veto
+rules, `ratio` drafts with the request's own sampler settings and without the stop tables.
+
+| commit | change |
+|---|---|
+| `565dca23c` | `ratio:<c>` and `ratio:<c>:<C>:<N>` (`common/spec-ratio.h`); the server's rollback replay carries the phrase budget over; `tests/test-spec-ratio.cpp` |
+
+`test-spec-ratio` runs the header the server runs. Per row, r <= c p holds to 5e-8 and the written frequencies match
+the formula (Monte Carlo, drafts piled on the model's least likely tokens). Over 1M written tokens in five budget
+settings, with rejections, bonus rows and rollback replays, every run of <= N tokens stayed within C, at most exactly
+C. With `LLAMA_SPEC_ACCEPT_STATS=1` the server logs the boost, the caps and a count of misaligned replays, which must
+stay 0.
+
+Measured (window R1, 10-29, production's setup, 72 prompts per mode, same prompts and seeds, vs exact; boost =
+KL(r || p), the expected log-ratio by which the rule makes what it writes likelier than the model's own sampling, in
+nats per token, from the stats log):
+
+| rule | thinking (medium) | chat | boost, thinking / chat |
+|---|---|---|---|
+| `esc+0.2` | +9.6% | +10.1% | 0.095 / 0.082 |
+| `ratio:1.5` | +7.6% | +4.1% | 0.020 / 0.015 |
+| `ratio:1.25` | +7.0% | +1.4% | 0.009 / 0.007 |
+| `ratio:1.5:1.5:16` | +2.5% | +1.2% | 0.006 / 0.006 |
+
+At 1.5x per 16 tokens the phrase budget lowered the cap on 65-75% of rows, which is where its speed went.
+Replaying the puzzle (200 resamples per rule, one server session): "is your stepfather" `exact` 6.0%, `esc+0.2`
+11.0%, `ratio:1.5` 8.5%, `ratio:1.5:1.5:16` 7.5%.
+
+Seeds do not pair runs across server sessions. The same request and seed gave identical text within a session
+(150/150), but only 17-35 of 150 matched across sessions, even under `exact` and on the same binary: the model's
+probabilities at the puzzle row moved by up to 0.025 with how the server had built the shared prefix. `esc+0.2`'s
+puzzle rate also moved between sessions (22.0%, 11.0%, 10.0%), while a `ratio:<c>` bound holds whatever the draft
+proposes.
+
+**Production runs `ratio:1.5` (10-29),** in both thinking modes. The operator asked for a fix that doesn't switch on
+the thinking mode. Gate on the deployed build: PPL 2.6074 (= HEAD), tg256 30.84, full op suite 3/3 backends, KLD 0.
+Its `esc+0.2` and `exact` replies were identical to the previous production binary's (9/9 each), and its `ratio`
+replies identical to the measured research build's. `start-qwen-vision.sh` passes `--spec-accept ratio:1.5`; a request
+can still send `"esc+0.2"` (+2% thinking, +6% chat over `ratio:1.5`, unbounded) or `"exact"`.
+
 ## Known gaps
 
 - **`GGML_CUDA_DEVICES` above the physical GPU count isn't reproducible.** At 3 virtual devices,
