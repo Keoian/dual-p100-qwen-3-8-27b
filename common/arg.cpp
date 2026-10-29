@@ -4250,6 +4250,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "exact: output distributed as the target's own sampling (default)\n"
         "escape: keep a draft unless the target's own sampler could never pick it (approximate)\n"
         "esc+<x>: escape, and also veto drafts below x times the top token's raw probability (approximate)\n"
+        "ratio:<c>[:<C>:<N>]: keep a draft with probability min(1, c p/q): no token more than c times as likely as the\n"
+        "target's own sampling, and with C and N no run of <= N tokens more than C times (approximate, bounded)\n"
         "lam:<x>, all: research",
         [](common_params & params, const std::string & value) {
             params.speculative.accept = common_spec_accept_from_str(value);

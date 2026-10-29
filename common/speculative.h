@@ -23,7 +23,8 @@ enum common_speculative_type common_speculative_type_from_name(const std::string
 // convert type to string
 std::string common_speculative_type_to_str(enum common_speculative_type type);
 
-// accept rules: "exact", "escape", "lam:<x>", "esc+<x>" (x in (0, 1)), "all". Throws std::invalid_argument
+// accept rules: "exact", "escape", "lam:<x>", "esc+<x>" (x in (0, 1)), "all", "ratio:<c>" or "ratio:<c>:<C>:<N>". Throws
+// std::invalid_argument
 common_spec_accept common_spec_accept_from_str(const std::string & s);
 std::string        common_spec_accept_to_str(const common_spec_accept & a);
 

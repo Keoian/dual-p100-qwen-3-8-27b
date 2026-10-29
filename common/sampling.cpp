@@ -4,6 +4,8 @@
 #include "fit.h"
 #include "log.h"
 #include "reasoning-budget.h"
+#include "spec-ratio.h"
+#include "speculative.h"
 
 #include "ggml.h"
 
@@ -13,6 +15,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <unordered_map>
 #include <vector>
 
@@ -132,8 +135,18 @@ struct common_sampler {
     // which on a 248k vocab is most of the host time in a speculative cycle.
     int32_t prefilter_k = 0;
 
+    // the ratio accept rule's phrase budget (spec-ratio.h): the spends of the last generated tokens; spends queued for
+    // the next accepted tokens (a verify sets one before each accept, and the server re-queues a rolled-back cycle's for
+    // its replay); and the spends of the tokens the last verify accepted
+    common_spec_budget  budget        = {};
+    std::deque<double>  spend_pending = {};
+    std::vector<double> spend_cycle   = {};
+
     void reset() {
         prev.clear();
+        budget.ring.clear();
+        spend_pending.clear();
+        spend_cycle.clear();
 
         llama_sampler_reset(chain);
     }
@@ -624,6 +637,25 @@ void common_sampler_accept(struct common_sampler * gsmpl, llama_token token, boo
     llama_sampler_accept(gsmpl->chain, token);
 
     gsmpl->prev.push_back(token);
+
+    if (is_generated) {
+        double sp = 0.0;
+        if (!gsmpl->spend_pending.empty()) {
+            sp = gsmpl->spend_pending.front();
+            gsmpl->spend_pending.pop_front();
+        }
+        gsmpl->budget.push(sp);
+    }
+}
+
+std::vector<double> common_sampler_spec_spends(const struct common_sampler * gsmpl) {
+    return gsmpl ? gsmpl->spend_cycle : std::vector<double>{};
+}
+
+void common_sampler_spec_requeue(struct common_sampler * gsmpl, const std::vector<double> & spends) {
+    if (gsmpl) {
+        gsmpl->spend_pending.assign(spends.begin(), spends.end());
+    }
 }
 
 void common_sampler_reset(struct common_sampler * gsmpl) {
@@ -644,7 +676,10 @@ struct common_sampler * common_sampler_clone(common_sampler * gsmpl) {
         /* .cur     = */ gsmpl->cur,
         /* .cur_p   = */ gsmpl->cur_p,
     };
-    res->prefilter_k = gsmpl->prefilter_k;
+    res->prefilter_k   = gsmpl->prefilter_k;
+    res->budget        = gsmpl->budget;
+    res->spend_pending = gsmpl->spend_pending;
+    res->spend_cycle   = gsmpl->spend_cycle;
     return res;
 }
 
@@ -667,6 +702,9 @@ void common_sampler_copy(const common_sampler * src, common_sampler * dst) {
     dst->cur_p.data = src->cur_p.data ? dst->cur.data() : nullptr; // re-point to dst's buffer
     dst->t_total_us = src->t_total_us;
     dst->prefilter_k = src->prefilter_k;
+    dst->budget        = src->budget;
+    dst->spend_pending = src->spend_pending;
+    dst->spend_cycle   = src->spend_cycle;
 }
 
 void common_perf_print(const struct llama_context * ctx, const struct common_sampler * gsmpl) {
@@ -914,6 +952,11 @@ size_t common_spec_block_verify(const std::vector<std::vector<llama_token_data>>
 //                    x times that of its top token
 //   esc+<x>          veto on either test
 //   all              never veto: the target only advances its state and writes the token after the draft
+//   ratio:<c>[:<C>:<N>] keep a draft with probability min(1, c p/q), else draw from the exact residual (p - q)+: no
+//                    token is emitted more than c times as often as under the target's own sampling, and with C and N
+//                    no run of <= N tokens more than C times (common/spec-ratio.h). Not a veto rule; c = 1 is exact.
+//                    LLAMA_SPEC_ACCEPT_STATS=1 logs its boost (KL of what it writes vs the target's sampling, nats per
+//                    drafted row) and the phrase budget's caps every 256 rejected cycles
 // A veto commits the target's own sample at that row and ends the cycle, as a rejection does; if that sample is the
 // drafted token, drafting continues. Rows under an active grammar or a forcing reasoning budget keep the exact
 // outcome. LLAMA_SPEC_ACCEPT_STATS=1 logs keep/veto counts every 256 vetoed cycles.
@@ -921,6 +964,12 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_s
         const std::vector<std::vector<llama_token_data>> & dists, std::mt19937 & rng, const common_spec_accept & acc) {
     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
     GGML_ASSERT(dists.size() >= draft.size());
+
+    // spends still queued here belong to no replayed token: a misaligned replay (logged as stale)
+    static int64_t ratio_stale = 0;
+    gsmpl->spend_cycle.clear();
+    ratio_stale += (int64_t) gsmpl->spend_pending.size();
+    gsmpl->spend_pending.clear();
 
     llama_synchronize(ctx);
     if (llama_get_sampled_token_ith(ctx, idxs[0]) != LLAMA_TOKEN_NULL) {
@@ -932,6 +981,16 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_s
 
     std::vector<llama_token> result;
     result.reserve(idxs.size());
+
+    // ratio: every accepted token carries its phrase-budget spend, also recorded for the server's replay of the cycle
+    const bool ratio = acc.kind == COMMON_SPEC_ACCEPT_RATIO;
+    const auto accept_tok = [&](llama_token t, double spend) {
+        if (ratio) {
+            gsmpl->spend_pending.push_back(spend);
+            gsmpl->spend_cycle.push_back(spend);
+        }
+        common_sampler_accept(gsmpl, t, true);
+    };
 
     // Block verification (LLAMA_SPEC_BLOCK_VERIFY=0 turns it off) (Sun et al., arXiv:2403.10444, Algorithm 2)
     // instead of the per-token rule. Same output distribution (their Theorem 1), and never fewer
@@ -1000,7 +1059,7 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_s
 
         if (grammar_should_apply(gsmpl)) {
             // grammar rejection sampling does not draw from cur_p
-            common_sampler_accept(gsmpl, id, true);
+            accept_tok(id, 0.0);
             result.push_back(id);
             if (draft[i] != id) {
                 return result;
@@ -1009,6 +1068,39 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_s
         }
 
         const llama_token_data_array & cur_p = gsmpl->cur_p;
+
+        if (ratio) {
+            static int64_t n_cyc = 0, n_rows = 0, n_low = 0;
+            static double  kl_sum = 0.0, cap_sum = 0.0;
+            static const bool stats = [] { const char * s = getenv("LLAMA_SPEC_ACCEPT_STATS"); return s && atoi(s) != 0; }();
+            // a forcing reasoning budget (p one-hot on the forced token) runs as exact
+            const bool forcing = gsmpl->rbudget && common_reasoning_budget_get_state(gsmpl->rbudget) == REASONING_BUDGET_FORCING;
+            const double c = forcing ? 1.0 : gsmpl->budget.cap(acc.ratio_c, acc.ratio_phrase_c, acc.ratio_phrase_n);
+            const double u1 = unif(rng), u2 = unif(rng);
+            llama_token y = id;
+            double spend = 0.0;
+            const bool keep = common_spec_ratio_row(cur_p.data, cur_p.size, dists[i], draft[i], c, u1, u2, id, y, spend);
+            if (stats) {
+                std::vector<double> r;
+                kl_sum  += common_spec_ratio_dist(cur_p.data, cur_p.size, dists[i], c, r);
+                cap_sum += c;
+                n_low   += c < std::min((double) acc.ratio_c, acc.ratio_phrase_c > 0.0f ? (double) acc.ratio_phrase_c : (double) acc.ratio_c);
+                n_rows++;
+            }
+            accept_tok(y, spend);
+            result.push_back(y);
+            if (keep) {
+                continue;
+            }
+            if (stats && ++n_cyc % 256 == 0) {
+                LOG_INF("spec ratio (%s): %lld rejected cycles, %lld drafted rows: boost nats per row %.5f, mean cap %.4f, "
+                        "rows under a lowered cap %.4f, stale budget entries %lld\n",
+                        common_spec_accept_to_str(acc).c_str(), (long long) n_cyc, (long long) n_rows,
+                        kl_sum / (double) n_rows, cap_sum / (double) n_rows, (double) n_low / (double) n_rows,
+                        (long long) ratio_stale);
+            }
+            return result;
+        }
 
         if (acc.approx()) {
             static int64_t n_cyc = 0, n_rows = 0, n_keep = 0, n_veto_esc = 0, n_veto_lam = 0, n_forced = 0;
@@ -1112,7 +1204,7 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_dist(struct common_s
 
     const llama_token id = common_sampler_sample(gsmpl, ctx, idxs[draft.size()]);
 
-    common_sampler_accept(gsmpl, id, true);
+    accept_tok(id, 0.0);
 
     result.push_back(id);
 

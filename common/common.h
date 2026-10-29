@@ -378,11 +378,17 @@ enum common_spec_accept_kind {
     COMMON_SPEC_ACCEPT_LAM,     // veto when the target's raw probability of the token is below lam x its top token's
     COMMON_SPEC_ACCEPT_ESC_LAM, // veto on either test
     COMMON_SPEC_ACCEPT_ALL,     // never veto (research only: measured broken)
+    COMMON_SPEC_ACCEPT_RATIO,   // keep a draft with probability min(1, c p/q), else the exact residual: no token more
+                                // than c times as likely as the target's own sampling; optionally no run of <= N
+                                // tokens more than C times (common/spec-ratio.h)
 };
 
 struct common_spec_accept {
     common_spec_accept_kind kind = COMMON_SPEC_ACCEPT_EXACT;
     float                   lam  = 0.0f; // LAM, ESC_LAM: in (0, 1)
+    float                   ratio_c        = 1.0f; // RATIO: c >= 1
+    float                   ratio_phrase_c = 0.0f; // RATIO: C >= 1 (0: no phrase budget)
+    int32_t                 ratio_phrase_n = 0;    // RATIO: N in [2, 256]
 
     bool approx() const { return kind != COMMON_SPEC_ACCEPT_EXACT; }
 };

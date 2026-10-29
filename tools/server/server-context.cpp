@@ -1460,7 +1460,12 @@ private:
             try {
                 spec.reset(common_speculative_init(params_base.speculative, params_base.n_parallel));
                 spec_reads_prompt = !spec || common_speculative_draft_reads_prompt(spec.get());
-                if (params_base.speculative.accept.approx()) {
+                if (params_base.speculative.accept.kind == COMMON_SPEC_ACCEPT_RATIO) {
+                    SRV_WRN("speculative accept rule '%s' by default (approximate, bounded: no token more than %g times as "
+                            "likely as the model's own sampling; requests can set \"speculative.accept\": \"exact\")\n",
+                            common_spec_accept_to_str(params_base.speculative.accept).c_str(),
+                            (double) params_base.speculative.accept.ratio_c);
+                } else if (params_base.speculative.accept.approx()) {
                     SRV_WRN("speculative accept rule '%s' by default (approximate: drafts the model would not have sampled "
                             "are kept; requests can set \"speculative.accept\": \"exact\")\n",
                             common_spec_accept_to_str(params_base.speculative.accept).c_str());
@@ -4442,7 +4447,10 @@ private:
                         slot.mem.seq_rm(slot.id, ckpt.pos_max + 1, -1);
 
                         slot.prompt.tokens.keep_first(ckpt.n_tokens);
+                        // the ratio rule's phrase-budget spends of the decided tokens travel to their replay
+                        const std::vector<double> spends = common_sampler_spec_spends(slot.smpl.get());
                         common_sampler_copy(smpl_save.get(), slot.smpl.get());
+                        common_sampler_spec_requeue(slot.smpl.get(), spends);
 
                         return;
                     }

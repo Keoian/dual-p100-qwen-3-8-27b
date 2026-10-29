@@ -2711,8 +2711,26 @@ common_spec_accept common_spec_accept_from_str(const std::string & s) {
         }
         a.kind = s[0] == 'l' ? COMMON_SPEC_ACCEPT_LAM : COMMON_SPEC_ACCEPT_ESC_LAM;
         a.lam  = lam;
+    } else if (s.rfind("ratio:", 0) == 0) {
+        // ratio:<c> or ratio:<c>:<C>:<N> (common/spec-ratio.h)
+        const auto parts = string_split<std::string>(s.substr(6), ':');
+        float v[3] = { 0.0f, 0.0f, 0.0f };
+        bool  ok   = parts.size() == 1 || parts.size() == 3;
+        for (size_t k = 0; ok && k < parts.size(); ++k) {
+            char * end = nullptr;
+            v[k] = strtof(parts[k].c_str(), &end);
+            ok = end != parts[k].c_str() && *end == '\0' && v[k] >= 1.0f && v[k] < 1e6f;
+        }
+        if (!ok || (parts.size() == 3 && (v[2] < 2.0f || v[2] > 256.0f || v[2] != floorf(v[2])))) {
+            throw std::invalid_argument("speculative accept rule '" + s + "': expected ratio:<c> or ratio:<c>:<C>:<N> with "
+                                        "c >= 1, C >= 1 and N an integer in [2, 256]");
+        }
+        a.kind           = COMMON_SPEC_ACCEPT_RATIO;
+        a.ratio_c        = v[0];
+        a.ratio_phrase_c = v[1];
+        a.ratio_phrase_n = (int32_t) v[2];
     } else {
-        throw std::invalid_argument("unknown speculative accept rule '" + s + "' (exact, escape, lam:<x>, esc+<x>, all)");
+        throw std::invalid_argument("unknown speculative accept rule '" + s + "' (exact, escape, lam:<x>, esc+<x>, all, ratio:<c>[:<C>:<N>])");
     }
     return a;
 }
@@ -2724,6 +2742,9 @@ std::string common_spec_accept_to_str(const common_spec_accept & a) {
         case COMMON_SPEC_ACCEPT_LAM:     return string_format("lam:%g", (double) a.lam);
         case COMMON_SPEC_ACCEPT_ESC_LAM: return string_format("esc+%g", (double) a.lam);
         case COMMON_SPEC_ACCEPT_ALL:     return "all";
+        case COMMON_SPEC_ACCEPT_RATIO:
+            return a.ratio_phrase_c > 0.0f ? string_format("ratio:%g:%g:%d", (double) a.ratio_c, (double) a.ratio_phrase_c, a.ratio_phrase_n)
+                                           : string_format("ratio:%g", (double) a.ratio_c);
     }
     return "unknown";
 }
