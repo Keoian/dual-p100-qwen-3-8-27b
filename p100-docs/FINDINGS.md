@@ -407,6 +407,32 @@ CF_ANALYSIS). Numbers are measured unless marked simulated.
   document's end through a context checkpoint and processes only itself (37-43 tokens, 0.6-1.0 s at 32k-200k), with
   the same reply as after a fresh restore.
 
+## Approximate accept rules and the model's own slips (2026-10-28/29, CHANGES §24)
+
+**The veto rules have no bound, and the quality checks used to choose them could not see why.** `escape` and
+`esc+<x>` keep the MTP head's token wherever the model allows it, so among plausible tokens the output follows the
+shallow head. The head prefers stock phrases. The 10-26 checks (rare words, words off the model's top choice) showed
+`esc+0.2` at or below the model's own rates, yet a thinking reply on 10-28 went wrong through it. At "Riley's father
+is", the model chose " your" 17% of the time. From there, the model alone usually backed out of the wrong
+"stepfather", but the head's " step" + "father" were each plausible, so `esc+0.2` kept them. Resampled from the
+recovered text, "is your stepfather" came out 15.7% of the time under `esc+0.2` vs 6.9% under `exact` (350 runs per
+rule). The error is made of top tokens, so counts of rare or off-top words cannot see it. The metric that does is
+the boost KL(r || p): how much likelier, per token, the rule makes what it writes than the model's own sampling. It
+adds up along a phrase.
+
+**A bound on the ratio, not on the veto, fixes it without switching on the thinking mode.** `ratio:<c>` keeps a draft
+with probability min(1, c p/q) and fills rejections from the exact residual, so r <= c p for every token, whatever the
+draft proposes. At c = 1.5 it keeps 80% of `esc+0.2`'s thinking speedup (+7.6% vs +9.6% over `exact`) and 40% of its
+chat speedup (+4.1% vs +10.1%), with a fifth of its boost (0.020 vs 0.095 nats per token in thinking). A per-phrase
+budget (`ratio:<c>:<C>:<N>`) bounds whole runs of tokens too. At 1.5x per 16 tokens it cost most of the speed.
+
+**Same seeds pair runs only within one server session.** Within a session, a request and seed gave the same text
+150/150 times. Across sessions only 17-52 of 150 matched, even under `exact` on one binary. Each session's first
+request builds the shared prefix, and its reuse and batching moved the model's probabilities at the puzzle row by up
+to 0.025, and with them the MTP head's. `exact`'s distribution stays the model's own (8.0 / 6.0 / 2.7% over three
+sessions, consistent with one rate), but `esc+0.2` follows the head, so its puzzle rate moved with the session
+(22.0 / 11.0 / 10.0%). A/B arms compared across sessions are independent samples, not pairs.
+
 ## What transfers to other Pascal cards
 
 - **Direct KV-cache dequantization** helps any pre-Volta GPU with a quantized KV cache, and more

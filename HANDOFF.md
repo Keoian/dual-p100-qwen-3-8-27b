@@ -5,9 +5,9 @@ rules" items of the tyler-port section below (the operator's mission brief lives
 on the build box).
 For the results and changes, see `p100-docs/`; to bring the production setup up elsewhere, `p100-docs/deploy/`.
 
-## Branch `p100-optimizations-keoian` (state 2026-10-24; default branch since 10-22, production on the reference box)
+## Branch `p100-optimizations-keoian` (state 2026-10-29; default branch since 10-22, production on the reference box)
 
-- Branch contents (CHANGES §18-22):
+- Branch contents (CHANGES §18-24):
   - all of the base `p100-optimizations` up to its tip d90ec36a3 (2026-10-17, unchanged since), merged;
   - `tyler-port` and `kv-q8q4-262k-vision1440-q8proj`, both ancestors of this branch now (historical names; work
     happens here);
@@ -24,13 +24,23 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   - the MTP draft's learned stop rule (CHANGES §22, 10-24): `LLAMA_SPEC_STOP_ISO` with its temperature gate
     (c44158c77), on in the start script (`STOP_ISO=0.125`, a6c045269); tables for thinking requests (504d4d353),
     on in the start script (`STOP_ISO_THINK=0.15`, e0b402541), and the chat tables for every other positive
-    temperature (f5fbd2542). Production runs all of it since 10-24 evening.
+    temperature (f5fbd2542). Production runs all of it since 10-24 evening;
+  - slot save `"largest": true` (7501cce23), keeping the chat across restarts;
+  - accept rules for the MTP draft chosen per request (CHANGES §23, 09a243185): `--spec-accept` and
+    `"speculative.accept"`, with `exact`, the veto rules `escape` / `esc+<x>` and `lam:<x>` / `all`;
+  - fattn-gemm keeps ggml's cuBLAS workspace (22642918d, outputs identical);
+  - the bounded accept rule `ratio:<c>` / `ratio:<c>:<C>:<N>` (CHANGES §24, 565dca23c; `common/spec-ratio.h`,
+    `tests/test-spec-ratio.cpp`). Production runs it as the default since 10-29 (7723454b2).
 - Production on :8090 is `p100-docs/deploy/start-qwen-vision.sh` (which runs `start-qwen.sh`) from `build-vision`:
   - `-c 262144 -sm tensor`, KV q8_0 K / q4_0 V, `-ub 1024 -b 2048 -np 1`;
   - MTP drafts n-max 4, `LLAMA_SPEC_SAMPLE_TEMP=1.0`, `LLAMA_SPEC_DRAFT_TOPK=20`; the draft stops by the lookup rule,
     one pair of tables per thinking mode chosen by the target temperature (`STOP_ISO_THINK=0.15` for 0.95-1.05,
     `STOP_ISO=0.125` for any other T > 0, p-min 0.2 for greedy): chat +4.7%, long context +4.8%, thinking +2.9%,
-    T 0.3 / 1.2 +6.6% / +6.1%, exact;
+    T 0.3 / 1.2 +6.6% / +6.1%, exact. The tables apply only to `exact` requests;
+  - MTP accept rule `ratio:1.5` by default (`SPEC_ACCEPT`, since 10-29; `esc+0.2` 10-26..29, `escape` 10-25..26).
+    Drafts of approximate-rule requests are sampled with the request's own settings, without the stop tables. A request
+    sends `"speculative.accept": "exact"` for the model's own sampling or `"esc+0.2"` for the previous default.
+    `start-qwen-vision-exact.sh` is the same setup with `exact` as the default;
   - `-ctxcp 32 --cache-ram 24576` (48 GB host; on 32 GB `CTXCP=4 CACHE_RAM=8192`);
   - Q8_0 projector on GPU1, `IMAGE_MAX_TOKENS=3600`, `GGML_CUDA_FA_VEC_MAX_Q=16`, `GGML_CUDA_FA_GEMM_MINQ=17`;
   - `--reasoning off` with `LLAMA_THINK_BY_BUDGET=1` and `LLAMA_SAMPLING_BY_MODE=1`: thinking off 0.7 / 0.8 / 20 / 0
@@ -39,18 +49,18 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   - `AR_BF16=1` (`GGML_CUDA_AR_BF16_THRESHOLD=1`): the decode and verify exchanges cross PCIe as bf16 (MTP replies
     +6.8%, KLD +1.1%; `AR_BF16=0` for exact f32);
   - JEV off, API key file, alias `qwen3.8-27b`, `--slot-save-path`, 150 W cap, no `GGML_CUDA_P2P`;
-  - binaries: `build-vision/bin` built 10-25 from 7501cce23's code (snapshot `/work/bench/mtp3/bin-r1b`; `bin-r1` is
-    f5fbd2542's),
-    `400aac811` included;
-  - rollback: the stop rule off on its own: restart with `STOP_ISO=0 STOP_ISO_THINK=0`. Binaries before the chat
-    tables served every temperature: `/work/bench/mtp3/bin-think/bin/*` (or `LLAMA_SPEC_STOP_ISO_TEMP=0.5,0.9`);
-    without the thinking tables: `/work/bench/mtp3/bin-prod-iso/bin/*`. The binaries before the rule:
-    `/work/bench/forks/exp2/bin/*` (c73976485's code). Back to 10-23's production: copy
-    `/work/bench/think/bin-prod-0d682248f/*` into `build-vision/bin` and restart with `AR_BF16=0 STOP_ISO=0`. The bf16
-    wire off on its own: restart with `AR_BF16=0`;
+  - binaries: `build-vision/bin` is the build of 565dca23c (snapshot `/work/bench/mtp4/bin-ratio-prod`, gated on that
+    tree: PPL 2.6074, tg256 30.84, full op suite, KLD 0);
+  - rollback: `SPEC_ACCEPT=esc+0.2` (or `exact`) restores the previous rule on this binary. The previous production
+    exactly (binaries 09a243185's code, esc+0.2 default) is kept with hashes and a README in
+    `/work/bench/prod-snapshots/esc0.2-2026-10-29`. Older snapshots: `/work/bench/mtp4/bin-acc` (= the same
+    binaries), `/work/bench/mtp3/bin-r1b` (before the accept rules), `bin-r1`, `bin-think`, `bin-prod-iso`,
+    `/work/bench/forks/exp2`. Copy a snapshot's files into `build-vision/bin` with `cp` (no rsync in the container)
+    BEFORE starting a script whose default rule that binary must know. Env rollbacks still apply: the stop rule off
+    with `STOP_ISO=0 STOP_ISO_THINK=0`, the bf16 wire off with `AR_BF16=0`;
   - after a reboot the installed Unraid script runs `/work/start-qwen-vision.sh`, which brings all of this back. It
     passes no env, so a lasting `AR_BF16=0` or `STOP_ISO=0` belongs in `/work/start-qwen.sh`'s default.
-  - Numbers: README "Measured" (production build and settings, 2026-10-22; decode re-measured 10-24).
+  - Numbers: README "Measured" (production build and settings, 2026-10-22; decode re-measured 10-24; MTP suite 10-29).
 - Contributions back to the base: 12 PRs to Kmic-68/llama.cpp `p100-optimizations`, **#5-#16, still open on 10-24**
   (table in CHANGES §20). Each is a branch `p100/<type>-<name>` cut from d90ec36a3 and validated there (identical
   logits for every code PR, gate PPL 2.6074, full op suite with all but the first merged; FINDINGS "Validating PRs").
@@ -61,9 +71,19 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
     other forks"): run its perplexity step directly until the check hashes only the two SASS kernels.
   - Candidates for PRs to Kmic from CHANGES §21: the q4p spill fix (his q4_0 default is the config it speeds up), the
     sampler prefilter, the `seq_rm` bound and the FILL fix; from §22, the MTP draft's stop rule. Not opened.
-  - `p100-docs/deploy/start-qwen.sh`'s comment on `STOP_ISO` still names the 0.5-0.9 window; since f5fbd2542 the
-    chat tables serve every T > 0 outside the thinking window (the script's behaviour is right). Fix it with the next
-    start-script change (the box's `/work/start-qwen.sh` must stay identical).
+  - `ratio` follow-ups (CHANGES §24):
+    - block verification for `ratio` needs its own correctness test before it is wired in (the per-token path runs
+      now; block verification gave `exact` +1.8%);
+    - the phrase budget at 1.5x per 16 tokens lowered the cap on 65-75% of rows (+1-2.5% over `exact`); a looser
+      budget (e.g. 2x per 16) is untested;
+    - the GPU stress test with adversarial drafts was inconclusive (the forced token was outside the model's nucleus,
+      so every rule fell back to the model); a stress test needs drafts on allowed, low-probability tokens.
+  - The research accept rules `look:<m>`, `tier`, `cost`, `vratio`, the per-token quality log and the
+    `LLAMA_SPEC_ADV` stress switch were never committed; the code is kept on the box in
+    `/work/bench/mtp4/worktree-backup-2026-10-29` (full.diff on 22642918d).
+  - Same-seed A/B arms pair only within one server session: a session's first request builds the shared prefix, and
+    its batching moves the model's probabilities (up to 0.025 at one measured row). Across sessions treat arms as
+    independent samples (CHANGES §24).
   - Adaptive-MTP leftovers (branch `mtp-adaptive-research`, FINDINGS "The MTP draft's stop rule"): lenient acceptance
     (approximate; needs a quality evaluation, never under a grammar) and n-max 16 aborting at warm-up
     (`GGML_ASSERT(obj_new)`, ggml.c). Deeper drafts and an exact-width verify were measured or simulated: they don't

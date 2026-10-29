@@ -15,7 +15,8 @@ workload**: a long fixed system prompt, then short turns. The working branch is 
 - **Settings:**
   - the full **262,144-token context**, tensor-parallel across both cards;
   - KV cache **q8_0 K / q4_0 V**;
-  - MTP drafts of up to 4 tokens;
+  - MTP drafts of up to 4 tokens, accepted by the bounded `ratio:1.5` rule (no token more than 1.5 times as likely as
+    the model's own sampling; a request can ask for `exact`);
   - images up to 2560x1440's pixel area;
   - 32 context checkpoints and a 24 GiB RAM prompt cache.
 - **Memory:** everything is in VRAM. The worst case, a 1440p image at 259k tokens of context, peaks at 15,185 and
@@ -27,6 +28,7 @@ workload**: a long fixed system prompt, then short turns. The working branch is 
 |---|---|
 | plain decode | **31.1 t/s** (10-24); 26.2 at 64k context, 23.4 at 128k (10-22) |
 | decode with MTP (chat replies) | **~47 t/s** (per-reply median 46.8 over 2 x 24 replies to 8 prompts, thinking-off sampling; 52.8 over all their tokens; 10-24, before the MTP draft's stop rule below, which added +4.7% on a 72-prompt suite: 49.30 -> 51.61 t/s) |
+| decode with MTP (72-prompt suite, 10-29) | chat replies **53.8 t/s**, thinking (medium) **55.6 t/s** with production's `ratio:1.5` accept rule; 51.7 / 51.7 with `exact` |
 | prefill | **410 t/s** at 512 tokens, 413 at 2,048; filling the window to 255k runs 355 -> 144 t/s |
 | time to first token | **~0.5 s** for a short message on a 25k-token cached conversation |
 | 1440p screenshot | vision encoder ~5.7 s; small text 96-100% legible; at 259k context: 31.6 s to read it in, then 27.3 t/s |
@@ -82,6 +84,14 @@ context (32k-200k) +4.8%; the output distribution is unchanged. Thinking request
 thinking-on traces (the thinking-off ones gained nothing there): +2.9%. Other temperatures (a client's own
 sampling) use the chat tables too: +6.6% at T 0.3, +6.1% at T 1.2. `STOP_ISO=0` / `STOP_ISO_THINK=0` in the start
 script turn them off.
+
+**Accept rules for the MTP draft, chosen per request (2026-10-25 / 10-29, [CHANGES.md §23-24](p100-docs/CHANGES.md)):**
+`"speculative.accept"` in a request (or `--spec-accept`) picks how drafted tokens are accepted. `exact` keeps the
+model's own sampling distribution. The veto rules (`escape`, `esc+<x>`) keep the MTP head's token wherever the model
+allows it: faster, but unbounded, and on 10-28 `esc+0.2` made a reasoning slip the model had started 2-3 times as
+likely. `ratio:<c>` keeps a draft with probability min(1, c p/q) and fills rejections from the exact residual, so no
+token is more than c times as likely as under the model's own sampling (`ratio:<c>:<C>:<N>` also bounds every run of
+N tokens). Production runs `ratio:1.5`: chat +4.1%, thinking +7.6% over `exact`.
 
 **Fixes:**
 - a GGML_ASSERT on 9-16-token prompts in Kmic's current tip (*PR*; production's configuration never tripped it, and
