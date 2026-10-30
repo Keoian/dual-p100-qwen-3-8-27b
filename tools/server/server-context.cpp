@@ -3442,11 +3442,15 @@ private:
                             dpr.target_min_p      = sp.min_p;
                             dpr.target_present    = sp.penalty_present;
                             dpr.target_pen_last_n = sp.penalty_last_n;
-                            // an approximate accept rule with a presence penalty: the target's penalty window (the
-                            // slot's last text tokens, then id_last, which the verify puts at pos0), for the draft to
-                            // sample as the request does. Media positions read as LLAMA_TOKEN_NULL and are skipped, as
-                            // the penalty sampler never saw them
-                            if (dpr.accept_approx && sp.penalty_present != 0.0f && sp.penalty_last_n != 0) {
+                            // an approximate accept rule (or LLAMA_SPEC_DRAFT_REQ=1) with a presence penalty: the
+                            // target's penalty window (the slot's last text tokens, then id_last, which the verify puts
+                            // at pos0), for the draft to sample as the request does. Media positions read as
+                            // LLAMA_TOKEN_NULL and are skipped, as the penalty sampler never saw them
+                            static const bool draft_req = [] {
+                                const char * e = getenv("LLAMA_SPEC_DRAFT_REQ");
+                                return e && atoi(e) != 0;
+                            }();
+                            if ((dpr.accept_approx || draft_req) && sp.penalty_present != 0.0f && sp.penalty_last_n != 0) {
                                 const int32_t n = sp.penalty_last_n > 0 ? sp.penalty_last_n : 1024;
                                 dpr.pen_window.push_back(slot.sampled);
                                 for (int32_t k = (int32_t) slot.prompt.tokens.size() - 1; k >= 0 && (int32_t) dpr.pen_window.size() < n; --k) {

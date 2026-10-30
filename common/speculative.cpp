@@ -1489,6 +1489,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         const char * s = getenv("LLAMA_SPEC_DRAFT_TOPP");
         return s ? (float) atof(s) : 1.0f;
     }();
+    // LLAMA_SPEC_DRAFT_REQ=1: under the exact rule too, sample each draft token the way the request samples (presence
+    // penalty, top-k, top-p, min-p, temperature: the accept_approx path below) instead of LLAMA_SPEC_SAMPLE_TEMP /
+    // LLAMA_SPEC_DRAFT_TOPK / LLAMA_SPEC_DRAFT_TOPP; only for a target temperature > 0 (at T 0 the draft
+    // samples as without the switch).
+    // q then sits closer to the target's served distribution p, and exact acceptance is sum(min(p, q)). Still exact:
+    // dp.dists records the list each token is drawn from. The stop tables stay on.
+    bool         draft_req = [] {
+        const char * s = getenv("LLAMA_SPEC_DRAFT_REQ");
+        return s && atoi(s) != 0;
+    }();
 
     void set_seed(uint32_t seed) override {
         sample_rng.seed(seed);
@@ -1526,16 +1536,79 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     int64_t prof_catchup_us = 0, prof_step_us = 0, prof_n_catchup = 0, prof_n_step = 0, prof_n_draft = 0;
 
     // LLAMA_SPEC_LOG=<path>: one line per cycle and sequence -- position, draft time, time from the
-    // end of drafting to the accept (the verify plus sampling), accepted count, and the top-1
-    // probability of every drafted token, the one that stopped drafting included. For studying
-    // draft-length policies offline.
+    // end of drafting to the accept (the verify plus sampling), accepted count, drafted count, and the
+    // top-1 probability of every drafted token, the one that stopped drafting included. For studying
+    // draft-length policies and acceptance by depth offline.
     FILE * spec_log = [] {
         const char * path = getenv("LLAMA_SPEC_LOG");
         return path ? fopen(path, "a") : nullptr;
     }();
+    // LLAMA_MTP_DUMP=<path>: binary log of the MTP head's inputs and outputs, for checking a reimplementation of the
+    // head against this code and for distillation data (p100-handoff/tools/mtp-distill). Records, little-endian:
+    //   int32 kind (1 = catch-up row, 2 = draft step), seq, step (-1 for a catch-up row), pos, token, n_embd,
+    //   float h_in[n_embd] (the row's hidden-state input: the target's h at pos-1, or the head's own at depth > 1);
+    //   kind 2 also: int32 k, k x (int32 id, float logit) (the draft's top-k raw logits), float lse (log-sum-exp of the
+    //   draft's logits over the whole vocabulary), int32 drafted (the token this step drafted; -1: it stopped drafting).
+    //   kind 3 (the target's raw output at a row of the batch it just decoded, e.g. each verify row): the header with
+    //   n_embd 0 and no h, then int32 k, k x (int32 id, float logit) (top-128), float lse, int32 -1; the logits at pos
+    //   predict pos+1.
+    // The file is opened for appending. The draft records are valid only with the CPU draft sampler (-sm tensor forces
+    // it; otherwise pass --no-spec-draft-backend-sampling): with backend sampling the draft's logits aren't read back.
+    FILE * mtp_dump = [] {
+        const char * path = getenv("LLAMA_MTP_DUMP");
+        return path ? fopen(path, "ab") : nullptr;
+    }();
+    static constexpr int32_t mtp_dump_k = 64;
+    std::vector<std::vector<float>> mtp_dump_h;
+    std::vector<llama_token>        mtp_dump_tok;
+    std::vector<llama_pos>          mtp_dump_pos;
+
+    void mtp_dump_head(int32_t kind, int32_t seq, int32_t step, int32_t pos, int32_t token, const float * h) {
+        const int32_t hd[6] = { kind, seq, step, pos, token, (int32_t) n_embd };
+        fwrite(hd, sizeof(hd), 1, mtp_dump);
+        fwrite(h, sizeof(float), n_embd, mtp_dump);
+    }
+
+    void mtp_dump_step(llama_context * ctx, llama_seq_id seq_id, int32_t step, int32_t idx, llama_token drafted) {
+        mtp_dump_head(2, seq_id, step, mtp_dump_pos[seq_id], mtp_dump_tok[seq_id], mtp_dump_h[seq_id].data());
+        mtp_dump_logits(ctx, idx, mtp_dump_k, drafted);
+    }
+
+    void mtp_dump_target(llama_context * ctx, const llama_batch & b, int32_t k) {
+        const int32_t hd[6] = { 3, b.seq_id[k][0], -1, b.pos[k], b.token[k], 0 };
+        fwrite(hd, sizeof(hd), 1, mtp_dump);
+        mtp_dump_logits(ctx, k, 128, -1);
+    }
+
+    void mtp_dump_logits(llama_context * ctx, int32_t idx, int32_t k, llama_token drafted) {
+        const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx)));
+        const float * lg = llama_get_logits_ith(ctx, idx);
+        std::vector<int32_t> ids(n_vocab);
+        for (int32_t j = 0; j < n_vocab; ++j) {
+            ids[j] = j;
+        }
+        std::partial_sort(ids.begin(), ids.begin() + k, ids.end(),
+                          [lg](int32_t a, int32_t b) { return lg[a] > lg[b]; });
+        double sum = 0.0;
+        const float mx = lg[ids[0]];
+        for (int32_t j = 0; j < n_vocab; ++j) {
+            sum += exp((double) (lg[j] - mx));
+        }
+        fwrite(&k, sizeof(k), 1, mtp_dump);
+        for (int32_t j = 0; j < k; ++j) {
+            fwrite(&ids[j], sizeof(int32_t), 1, mtp_dump);
+            fwrite(&lg[ids[j]], sizeof(float), 1, mtp_dump);
+        }
+        const float lse = mx + (float) log(sum);
+        fwrite(&lse, sizeof(lse), 1, mtp_dump);
+        const int32_t d = drafted;
+        fwrite(&d, sizeof(d), 1, mtp_dump);
+    }
+
     struct spec_log_rec {
         llama_pos          pos0 = 0;
         int64_t            t_begin = 0, t_end = 0;
+        int                n_draft = 0;
         std::vector<float> p;
     };
     std::vector<spec_log_rec> spec_log_recs;
@@ -1624,11 +1697,18 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         verify_h.assign(n_seq, {});
         verify_h_rows.assign(n_seq, 0);
+
+        mtp_dump_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
+        mtp_dump_tok.assign(n_seq, -1);
+        mtp_dump_pos.assign(n_seq, -1);
     }
 
     ~common_speculative_impl_draft_mtp() override {
         if (spec_log) {
             fclose(spec_log);
+        }
+        if (mtp_dump) {
+            fclose(mtp_dump);
         }
         auto * ctx_dft = this->params.ctx_dft;
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) backend_chains.size(); ++seq_id) {
@@ -1701,6 +1781,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
+        if (mtp_dump && batch_in.logits) {
+            for (int k = 0; k < n_tokens; ++k) {
+                if (batch_in.logits[k]) {
+                    mtp_dump_target(ctx_tgt, batch_in, k);
+                }
+            }
+        }
+
         // if kv is shared with target (e.g Gemma4), then we can skip this catch-up decode
         if (!is_mem_shared) {
             common_batch_clear(batch);
@@ -1730,6 +1818,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 }
 
                 set_h(i_batch_beg[seq_id], h_at(seq_id, batch_in.pos[i_batch_beg[seq_id]] - 1));
+            }
+
+            if (mtp_dump) {
+                for (int k = 0; k < n_tokens; ++k) {
+                    mtp_dump_head(1, batch_in.seq_id[k][0], -1, batch_in.pos[k], batch_in.token[k],
+                                  batch.embd + (size_t) k * n_embd);
+                }
+                fflush(mtp_dump);
             }
 
             auto * mem_dft = llama_get_memory(ctx_dft);
@@ -1859,6 +1955,18 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 llama_set_nextn_layer_offset(ctx_dft, i);
             }
 
+            if (mtp_dump) {
+                // the inputs of each drafting sequence's output row, before the batch is rebuilt
+                for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+                    if (drafting[seq_id]) {
+                        const int32_t r = i_last[seq_id];
+                        mtp_dump_tok[seq_id] = batch.token[r];
+                        mtp_dump_pos[seq_id] = batch.pos[r];
+                        std::memcpy(mtp_dump_h[seq_id].data(), batch.embd + (size_t) r * n_embd, row_bytes);
+                    }
+                }
+            }
+
             const int64_t t_step = prof ? ggml_time_us() : 0;
             static const bool tl = getenv("LLAMA_TL") != nullptr;
             if (tl) { fprintf(stderr, "TL S0 %lld\n", (long long) ggml_time_us()); }
@@ -1921,6 +2029,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                                               : !approx && cur_p->data[0].p < params.p_min) ||
                                       pc_next < p_cum_min(dparams.at(seq_id).pos0);
                 if (stop) {
+                    if (mtp_dump) {
+                        mtp_dump_step(ctx_dft, seq_id, i, i_last[seq_id], -1);
+                    }
                     drafting[seq_id] = false;
                     n_drafting--;
 
@@ -1931,7 +2042,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 auto & dp = dparams.at(seq_id);
 
                 float q_id = cur_p->data[0].p; // the draft's probability of the token it drafts
-                if (dp.accept_approx && dp.target_temp > 0.0f) {
+                if ((dp.accept_approx || draft_req) && dp.target_temp > 0.0f) {
                     // an approximate accept rule keeps the draft's own choices: sample each token the way the request
                     // samples, from dp.target_* (presence penalty over the target's penalty window plus this draft's
                     // tokens, then top-k, top-p, min-p, temperature: the target chain's order) instead of
@@ -2044,6 +2155,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     s_iso[seq_id] *= spec_iso_lookup(iso_tq, q_id);
                 }
 
+                if (mtp_dump) {
+                    mtp_dump_step(ctx_dft, seq_id, i, i_last[seq_id], id);
+                }
+
                 common_sampler_accept(smpl, id, true);
                 auto & result = *dp.result;
 
@@ -2110,7 +2225,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 dp.result->clear();
             }
             if (spec_log) {
-                spec_log_recs[seq_id].t_end = ggml_time_us();
+                spec_log_recs[seq_id].t_end   = ggml_time_us();
+                spec_log_recs[seq_id].n_draft = (int) dp.result->size();
             }
         }
     }
@@ -2161,8 +2277,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         if (spec_log && seq_id < (llama_seq_id) spec_log_recs.size() && spec_log_recs[seq_id].t_end > 0) {
             const auto & r = spec_log_recs[seq_id];
-            fprintf(spec_log, "%d %lld %lld %d", (int) r.pos0, (long long) (r.t_end - r.t_begin),
-                    (long long) (ggml_time_us() - r.t_end), (int) n_accepted);
+            fprintf(spec_log, "%d %lld %lld %d %d", (int) r.pos0, (long long) (r.t_end - r.t_begin),
+                    (long long) (ggml_time_us() - r.t_end), (int) n_accepted, r.n_draft);
             for (const float pv : r.p) {
                 fprintf(spec_log, " %.4f", pv);
             }
