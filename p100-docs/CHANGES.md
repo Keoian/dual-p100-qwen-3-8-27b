@@ -897,7 +897,8 @@ Simulated on the recorded traces, against the model's own sampling at the same p
 rare words (ones the model picks < 5% of the time; chat 8 per 1k, the same; thinking 22 vs 37) and no more words off
 the model's top choice (chat 14.8%, the same; thinking 20.6% vs 21.8%) than the model itself; `escape` writes more
 (chat 13 per 1k and 16.1%, thinking 54 and 25.3%). Its drift is sideways (the MTP head's choice among plausible
-words) and a temperature change does not offset it. `start-qwen-vision.sh` passes `--spec-accept esc+0.2`.
+words) and a temperature change does not offset it. `start-qwen-vision.sh` passed `--spec-accept esc+0.2` (10-26 to
+10-29).
 
 ## 24. A bounded accept rule for the MTP draft: `ratio:<c>` (2026-10-29)
 
@@ -948,11 +949,49 @@ probabilities at the puzzle row moved by up to 0.025 with how the server had bui
 puzzle rate also moved between sessions (22.0%, 11.0%, 10.0%), while a `ratio:<c>` bound holds whatever the draft
 proposes.
 
-**Production runs `ratio:1.5` (10-29),** in both thinking modes. The operator asked for a fix that doesn't switch on
+**Production ran `ratio:1.5` from 10-29 to 10-30** (back on `exact` since, §25), in both thinking modes. The operator asked for a fix that doesn't switch on
 the thinking mode. Gate on the deployed build: PPL 2.6074 (= HEAD), tg256 30.84, full op suite 3/3 backends, KLD 0.
 Its `esc+0.2` and `exact` replies were identical to the previous production binary's (9/9 each), and its `ratio`
-replies identical to the measured research build's. `start-qwen-vision.sh` passes `--spec-accept ratio:1.5`; a request
-can still send `"esc+0.2"` (+2% thinking, +6% chat over `ratio:1.5`, unbounded) or `"exact"`.
+replies identical to the measured research build's. `start-qwen-vision.sh` passed `--spec-accept ratio:1.5`; a request
+could still send `"esc+0.2"` (+2% thinking, +6% chat over `ratio:1.5`, unbounded) or `"exact"`.
+
+## 25. Production back on the exact accept rule; hooks for studying the MTP draft (2026-10-30)
+
+**Why.** The operator chose output distributed exactly as the model's own sampling over `ratio:1.5`'s speed (thinking
++7.6%, chat +4.1%). Under `exact` the MTP head changes only speed, never what is written; the "stepfather" slip of
+§24 then happens at the model's own rate. What still limits exact-mode speed, and what could pay without loosening
+the rule, is in [MTP-DRAFT.md](MTP-DRAFT.md).
+
+**Deploy.** `start-qwen-vision.sh` passes `--spec-accept exact` again; same binaries as §24 (the build of `565dca23c`),
+so only the script's default changed. Restarted 10-30 22:53 UTC with the chat kept (16,508 tokens restored); default,
+`exact` and `ratio:1.5` requests answered normally. `SPEC_ACCEPT=ratio:1.5` (or a request's
+`"speculative.accept": "ratio:1.5"`) brings back the previous default. `start-qwen-vision-exact.sh` stays: it pins
+`exact` even when `SPEC_ACCEPT` is set.
+
+Speeds at exact (production setup): chat 51.6, thinking 51.4 t/s (72 prompts each, 10-30); 53.1 / 48.7 / 41.3 /
+37.8 t/s at 32k / 64k / 128k / 200k context (10-28).
+
+**Hooks** (server env, all off by default): `LLAMA_MTP_DUMP=<path>` logs the MTP head's inputs and draft logits and
+the target's logits on every verified row, for checking a reimplementation of the head and for distillation data;
+`LLAMA_SPEC_DRAFT_REQ=1` samples the draft with the request's own settings under `exact` too (still exact; the stop
+tables stay on); `LLAMA_SPEC_LOG` now also writes the drafted count per cycle (a new fifth column). The dump appends
+and its draft records are valid only with the CPU draft sampler (`-sm tensor` forces it; elsewhere
+`--no-spec-draft-backend-sampling`). Built on `f0dae16cc` and run in window K1 (10-30) with every switch off: 24/24
+greedy replies identical to the production binary (random tool-call ids ignored), and the two runs of each 72-prompt
+suite token-identical to each other (the production binary itself was not run on the suite that night). Production's
+binaries don't carry the hooks; nothing to rebuild while they stay off.
+
+| commit | change |
+|---|---|
+| `173312209` | `LLAMA_MTP_DUMP`, `LLAMA_SPEC_DRAFT_REQ`, the drafted count in `LLAMA_SPEC_LOG` (`common/speculative.cpp`, `tools/server/server-context.cpp`) |
+| `c728cc744` | `p100-handoff/tools/mtp-distill/`: a PyTorch copy of the MTP head that matches llama.cpp (100% top-1 unquantized, 98.7% on the GPU server), paired overlap checks, the distillation trainer (smoke-tested only), the window scripts |
+
+Measured with the hooks, under exact (window K1, 72 prompts per mode): none of the cheap knobs clears the +2% bar.
+The draft's KV cache at q8_0, the MTP block at Q8_0 and a Q8_0 draft LM head move overlap by at most 0.1% and lose
+0.6-2.1% to their step cost; sampling the draft with the request's settings gains 6.7% accepted tokens per cycle in chat
+but its stop tables over-draft (+0.7%, n.s.); a draft LM head over 98,304 rows instead of 81,920 gives +0.9% (n.s.).
+The draft's LM head can't propose ids at or above 81,920, `<|im_end|>` and `</think>` among them. Tables and the
+retraining proposal: MTP-DRAFT.md.
 
 ## Known gaps
 
@@ -984,6 +1023,10 @@ can still send `"esc+0.2"` (+2% thinking, +6% chat over `ratio:1.5`, unbounded) 
   decision state not supported, (the full 30k evaluation matches the published metrics, see above), deciding on System 2's cache without the adapter on the state tested and rejected (FINDINGS), no state-prefix reuse across decisions (each decision re-encodes its state, ~0.6 s at ~100 tokens, ~2 s at
   ~500). Full depth with JEV + image passed with the q8_0 decision cache (the type served while JEV was in
   production); q4_0 at 262k not run.
+- **One prompt gave the target NaN on llama.cpp's CPU path** (every row from position 1; 10-29, the "train travels
+  120 km" suite prompt). Setup: a CPU-only test server for the MTP parity work on a test model with an F32 MTP block and
+  output matrix (since deleted), 2 threads, q8_0/q4_0 cache, flash attention on. Not checked on the production model
+  or upstream; production runs CUDA. Not chased.
 - **Slot state does not survive a restart by itself.** Disk slot files are client-driven (`/slots/0?action=save|restore`);
   the RAM prompt cache is lost on restart. An idle-time autosave was designed but not built (root HANDOFF.md, "parked design").
 - **`LLAMA_THINK_BY_BUDGET` on Apertus (§19).** Its thinking-on and thinking-off reply starts are identical, so the

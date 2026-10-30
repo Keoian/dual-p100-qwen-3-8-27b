@@ -8,13 +8,12 @@
 #   - -ctxcp 32, --cache-ram 24576 (more prompt snapshots in host RAM, see below), -b 2048 (fast cancellation)
 #   - GGML_CUDA_FA_VEC_MAX_Q / GGML_CUDA_FA_GEMM_MINQ: 6-16 token batches to the vec kernel, 17+ to the GEMM path, so no
 #     batch reaches the tile kernel's whole-cache f16 conversion (which grows with depth and ran out of memory at 255k)
-#   - MTP accept rule ratio:1.5 (SPEC_ACCEPT, --spec-accept; CHANGES §24): APPROXIMATE but bounded. A drafted token is
-#     kept with probability min(1, 1.5 p/q) and a rejection draws from the exact residual, so no token is written more
-#     than 1.5x as often as under the 27B's own sampling (esc+0.2 had no such bound: from the 10-28 "stepfather" slip it
-#     wrote the drafter's stock phrase 2-3x as often). 10-29, 72 prompts each: thinking +7.6%, chat +4.1% over exact
-#     (esc+0.2 +9.6% / +10.1%). A request sends "speculative.accept": "exact" for the model's own sampling or "esc+0.2"
-#     for the previous default. start-qwen-vision-exact.sh is this setup with exact as the default (production ran
-#     escape 10-25 to 10-26, esc+0.2 10-26 to 10-29, ratio:1.5 since)
+#   - MTP accept rule exact (SPEC_ACCEPT, --spec-accept; CHANGES §23, §25): every token keeps the 27B's own odds (the
+#     speculative-sampling rule), at chat 51.6 / thinking 51.4 t/s (10-30, 72 prompts each). The bounded ratio:1.5
+#     (CHANGES §24) was the default 10-29 to 10-30: thinking +7.6%, chat +4.1%, but a drafted token can be written up to
+#     1.5x as often as the 27B would pick it. Back to it: SPEC_ACCEPT=ratio:1.5, or per request
+#     "speculative.accept": "ratio:1.5". Production ran escape 10-25 to 10-26, esc+0.2 10-26 to 10-29, ratio:1.5 10-29 to
+#     10-30, exact before 10-25 and since 10-30 (the operator's call: output identical in distribution to the model alone)
 # Measured 10-18 (P100 x2, 150 W, build-vision): gate PPL 2.6064, KLD vs f16 cache 0.00116 (q4_0/q4_0: 0.00274),
 # vision suite 0.935 (BF16 projector 0.938); Ember 10 turns at 25k: TTFT median 474 ms, decode 36.5 t/s; fill to 255k
 # 358 -> 144 t/s (q4_0/q4_0 at -ub 2048: 386 -> 144); 1440p screenshot at 258,866 tokens: prompt 31.5 s, decode 27.8 t/s,
@@ -33,5 +32,5 @@ export CTXCP=${CTXCP:-32} CACHE_RAM=${CACHE_RAM:-24576}
 # -b 2048: a dropped client frees the server in ~2 s instead of ~33 s (10-21, 64k prompt dropped after 60 s); greedy output,
 # MTP draft counts and speed at 112k context byte-identical to -b 32768
 export NBATCH=${NBATCH:-2048}
-export SPEC_ACCEPT=${SPEC_ACCEPT:-ratio:1.5}
+export SPEC_ACCEPT=${SPEC_ACCEPT:-exact}
 exec bash "$(dirname "$0")/start-qwen.sh" "$@"
