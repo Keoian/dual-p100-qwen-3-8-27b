@@ -1,5 +1,10 @@
 # Measurement tools used
 
+## mtp-distill/
+The MTP draft head reimplemented in PyTorch (exact parity with llama.cpp), paired overlap checks on
+`LLAMA_MTP_DUMP` dumps, and a distillation trainer (smoke-tested only). See its README and
+`p100-docs/MTP-DRAFT.md`.
+
 ## cpu-sampler.c
 LD_PRELOAD sampling profiler. `perf` is unusable here (perf_event_paranoid=4) and gdb cannot
 attach (yama ptrace_scope=1), so this spawns a sampler thread that finds the busiest thread by
