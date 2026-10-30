@@ -15,20 +15,20 @@ workload**: a long fixed system prompt, then short turns. The working branch is 
 - **Settings:**
   - the full **262,144-token context**, tensor-parallel across both cards;
   - KV cache **q8_0 K / q4_0 V**;
-  - MTP drafts of up to 4 tokens, accepted by the bounded `ratio:1.5` rule (no token more than 1.5 times as likely as
-    the model's own sampling; a request can ask for `exact`);
+  - MTP drafts of up to 4 tokens, accepted by the `exact` rule: every token keeps the model's own odds (since 10-30;
+    a request can ask for the faster, bounded `ratio:1.5`);
   - images up to 2560x1440's pixel area;
   - 32 context checkpoints and a 24 GiB RAM prompt cache.
 - **Memory:** everything is in VRAM. The worst case, a 1440p image at 259k tokens of context, peaks at 15,185 and
   16,099 MiB of 16,384 per card.
 
-## Measured (this box, production build and settings, 2026-10-22; decode re-measured 2026-10-24)
+## Measured (this box, production build and settings, 2026-10-22; decode re-measured 2026-10-24; MTP suite 2026-10-30)
 
 | | |
 |---|---|
 | plain decode | **31.1 t/s** (10-24); 26.2 at 64k context, 23.4 at 128k (10-22) |
 | decode with MTP (chat replies) | **~47 t/s** (per-reply median 46.8 over 2 x 24 replies to 8 prompts, thinking-off sampling; 52.8 over all their tokens; 10-24, before the MTP draft's stop rule below, which added +4.7% on a 72-prompt suite: 49.30 -> 51.61 t/s) |
-| decode with MTP (72-prompt suite, 10-29) | chat replies **53.8 t/s**, thinking (medium) **55.6 t/s** with production's `ratio:1.5` accept rule; 51.7 / 51.7 with `exact` |
+| decode with MTP (72-prompt suite, 10-30) | chat replies **51.6 t/s**, thinking (medium) **51.4 t/s** with production's `exact` accept rule; 53.8 / 55.6 with `ratio:1.5` (10-29). At 32k / 64k / 128k / 200k context 53.1 / 48.7 / 41.3 / 37.8 t/s (exact, 10-28) |
 | prefill | **410 t/s** at 512 tokens, 413 at 2,048; filling the window to 255k runs 355 -> 144 t/s |
 | time to first token | **~0.5 s** for a short message on a 25k-token cached conversation |
 | 1440p screenshot | vision encoder ~5.7 s; small text 96-100% legible; at 259k context: 31.6 s to read it in, then 27.3 t/s |
@@ -91,7 +91,16 @@ model's own sampling distribution. The veto rules (`escape`, `esc+<x>`) keep the
 allows it: faster, but unbounded, and on 10-28 `esc+0.2` made a reasoning slip the model had started 2-3 times as
 likely. `ratio:<c>` keeps a draft with probability min(1, c p/q) and fills rejections from the exact residual, so no
 token is more than c times as likely as under the model's own sampling (`ratio:<c>:<C>:<N>` also bounds every run of
-N tokens). Production runs `ratio:1.5`: chat +4.1%, thinking +7.6% over `exact`.
+N tokens). `ratio:1.5` is chat +4.1%, thinking +7.6% over `exact`; production ran it 10-29 to 10-30 and runs `exact`
+since (CHANGES §25).
+
+**What limits the MTP draft under `exact` (2026-10-30, [MTP-DRAFT.md](p100-docs/MTP-DRAFT.md)):** at each drafted
+row the draft's distribution overlaps the model's only 0.78 in chat and 0.74 in thinking (the chance the row is kept
+once its prefix was; the server's acceptance counter, over all drafted rows, reads 0.68 / 0.66), and that mismatch,
+not precision, is what's left. Cheaper
+knobs (draft KV q8_0, a Q8_0 MTP block or draft LM head, a wider draft vocabulary) gained at most +0.9%. The document
+has the proposal for the speed still on the table, the retraining of the MTP head it would take, and why no MTP work
+can fix a slip the model makes itself (the "stepfather" riddle).
 
 **Fixes:**
 - a GGML_ASSERT on 9-16-token prompts in Kmic's current tip (*PR*; production's configuration never tripped it, and

@@ -5,9 +5,9 @@ rules" items of the tyler-port section below (the operator's mission brief lives
 on the build box).
 For the results and changes, see `p100-docs/`; to bring the production setup up elsewhere, `p100-docs/deploy/`.
 
-## Branch `p100-optimizations-keoian` (state 2026-10-29; default branch since 10-22, production on the reference box)
+## Branch `p100-optimizations-keoian` (state 2026-10-30; default branch since 10-22, production on the reference box)
 
-- Branch contents (CHANGES §18-24):
+- Branch contents (CHANGES §18-25):
   - all of the base `p100-optimizations` up to its tip d90ec36a3 (2026-10-17, unchanged since), merged;
   - `tyler-port` and `kv-q8q4-262k-vision1440-q8proj`, both ancestors of this branch now (historical names; work
     happens here);
@@ -30,17 +30,21 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
     `"speculative.accept"`, with `exact`, the veto rules `escape` / `esc+<x>` and `lam:<x>` / `all`;
   - fattn-gemm keeps ggml's cuBLAS workspace (22642918d, outputs identical);
   - the bounded accept rule `ratio:<c>` / `ratio:<c>:<C>:<N>` (CHANGES §24, 565dca23c; `common/spec-ratio.h`,
-    `tests/test-spec-ratio.cpp`). Production runs it as the default since 10-29 (7723454b2).
+    `tests/test-spec-ratio.cpp`). Production ran it as the default 10-29 to 10-30 (7723454b2);
+  - production back on the `exact` rule (CHANGES §25, 10-30, 2ad72a7c7), and env hooks for studying the MTP draft, off
+    by default: `LLAMA_MTP_DUMP`, `LLAMA_SPEC_DRAFT_REQ`, the drafted count in `LLAMA_SPEC_LOG` (173312209); with the
+    PyTorch copy of the MTP head and its checks and trainer in `p100-handoff/tools/mtp-distill/` (c728cc744;
+    p100-docs/MTP-DRAFT.md).
 - Production on :8090 is `p100-docs/deploy/start-qwen-vision.sh` (which runs `start-qwen.sh`) from `build-vision`:
   - `-c 262144 -sm tensor`, KV q8_0 K / q4_0 V, `-ub 1024 -b 2048 -np 1`;
   - MTP drafts n-max 4, `LLAMA_SPEC_SAMPLE_TEMP=1.0`, `LLAMA_SPEC_DRAFT_TOPK=20`; the draft stops by the lookup rule,
     one pair of tables per thinking mode chosen by the target temperature (`STOP_ISO_THINK=0.15` for 0.95-1.05,
     `STOP_ISO=0.125` for any other T > 0, p-min 0.2 for greedy): chat +4.7%, long context +4.8%, thinking +2.9%,
     T 0.3 / 1.2 +6.6% / +6.1%, exact. The tables apply only to `exact` requests;
-  - MTP accept rule `ratio:1.5` by default (`SPEC_ACCEPT`, since 10-29; `esc+0.2` 10-26..29, `escape` 10-25..26).
-    Drafts of approximate-rule requests are sampled with the request's own settings, without the stop tables. A request
-    sends `"speculative.accept": "exact"` for the model's own sampling or `"esc+0.2"` for the previous default.
-    `start-qwen-vision-exact.sh` is the same setup with `exact` as the default;
+  - MTP accept rule `exact` by default (`SPEC_ACCEPT`, since 10-30 22:53 UTC; `ratio:1.5` 10-29..30, `esc+0.2`
+    10-26..29, `escape` 10-25..26, `exact` before). A request can send `"speculative.accept": "ratio:1.5"` (or any
+    other rule); drafts of approximate-rule requests are sampled with the request's own settings, without the stop
+    tables. `start-qwen-vision-exact.sh` pins `exact` even when `SPEC_ACCEPT` is set;
   - `-ctxcp 32 --cache-ram 24576` (48 GB host; on 32 GB `CTXCP=4 CACHE_RAM=8192`);
   - Q8_0 projector on GPU1, `IMAGE_MAX_TOKENS=3600`, `GGML_CUDA_FA_VEC_MAX_Q=16`, `GGML_CUDA_FA_GEMM_MINQ=17`;
   - `--reasoning off` with `LLAMA_THINK_BY_BUDGET=1` and `LLAMA_SAMPLING_BY_MODE=1`: thinking off 0.7 / 0.8 / 20 / 0
@@ -51,8 +55,11 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
   - JEV off, API key file, alias `qwen3.8-27b`, `--slot-save-path`, 150 W cap, no `GGML_CUDA_P2P`;
   - binaries: `build-vision/bin` is the build of 565dca23c (snapshot `/work/bench/mtp4/bin-ratio-prod`, gated on that
     tree: PPL 2.6074, tg256 30.84, full op suite, KLD 0);
-  - rollback: `SPEC_ACCEPT=esc+0.2` (or `exact`) restores the previous rule on this binary. The previous production
-    exactly (binaries 09a243185's code, esc+0.2 default) is kept with hashes and a README in
+  - rollback: `SPEC_ACCEPT=ratio:1.5 bash /work/bench/prod-restart.sh` restores the 10-29 default on this binary
+    until the next restart (scripts of that setup in `/work/bench/prod-snapshots/ratio1.5-2026-10-30`);
+    `SPEC_ACCEPT=esc+0.2` the one before. The Unraid startup script passes no environment, so a lasting rollback
+    changes `SPEC_ACCEPT`'s default in `/work/start-qwen-vision.sh` (or copies the snapshot's scripts back).
+    The esc+0.2 production exactly (binaries 09a243185's code) is kept with hashes and a README in
     `/work/bench/prod-snapshots/esc0.2-2026-10-29`. Older snapshots: `/work/bench/mtp4/bin-acc` (= the same
     binaries), `/work/bench/mtp3/bin-r1b` (before the accept rules), `bin-r1`, `bin-think`, `bin-prod-iso`,
     `/work/bench/forks/exp2`. Copy a snapshot's files into `build-vision/bin` with `cp` (no rsync in the container)
@@ -60,7 +67,7 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
     with `STOP_ISO=0 STOP_ISO_THINK=0`, the bf16 wire off with `AR_BF16=0`;
   - after a reboot the installed Unraid script runs `/work/start-qwen-vision.sh`, which brings all of this back. It
     passes no env, so a lasting `AR_BF16=0` or `STOP_ISO=0` belongs in `/work/start-qwen.sh`'s default.
-  - Numbers: README "Measured" (production build and settings, 2026-10-22; decode re-measured 10-24; MTP suite 10-29).
+  - Numbers: README "Measured" (production build and settings, 2026-10-22; decode re-measured 10-24; MTP suite 10-30).
 - Contributions back to the base: 12 PRs to Kmic-68/llama.cpp `p100-optimizations`, **#5-#16, still open on 10-24**
   (table in CHANGES §20). Each is a branch `p100/<type>-<name>` cut from d90ec36a3 and validated there (identical
   logits for every code PR, gate PPL 2.6074, full op suite with all but the first merged; FINDINGS "Validating PRs").
@@ -78,6 +85,19 @@ For the results and changes, see `p100-docs/`; to bring the production setup up 
       budget (e.g. 2x per 16) is untested;
     - the GPU stress test with adversarial drafts was inconclusive (the forced token was outside the model's nucleus,
       so every rule fell back to the model); a stress test needs drafts on allowed, low-probability tokens.
+  - MTP draft speed under `exact` (p100-docs/MTP-DRAFT.md, the operator's decisions pending): (A) a draft LM head over
+    98,304 rows plus rows for `<|im_end|>` and `</think>` (a small code change; 98,304 alone measured +0.9% chat, n.s.);
+    (B) the request-sampled draft (`LLAMA_SPEC_DRAFT_REQ=1`) with stop tables refit on its drafts; (C) distilling the
+    MTP head (six night windows, ~33 h downtime; median estimate +3-5%). Also pending: the Project Gutenberg download
+    for long-document training prompts, and deleting the rejected Q8_0 MTP-block GGUF
+    (`/work/bench/mtp5/models/Qwen3.8-27B-UD-Q6_K-mtpq8.gguf`, 22 GB, never the production file). Before any
+    collection: cut the dump's 19-25% decode cost and record the sampler's candidate list per verify row (the
+    reasoning budget's forced tokens). Raw results and logs: `/work/bench/mtp5/`, `/work/bench/LOG.md` (10-29/30);
+    full reports `/work/MTP_ACCURACY.md` (Part 1 table, Part 2 scoping), `/work/MTP_STEPFATHER.md` and
+    `/work/MTP_RATIO_R1.md` / `MTP_RATIO_SWITCH.md` (the riddle and the ratio rule), riddle data `/work/bench/riddle/`.
+  - The model's greedy output depends on the verify schedule: changing only the stock draft's lengths changed 11 of 24
+    greedy replies (near-ties). Byte-identity checks therefore certify only changes that keep the drafting schedule;
+    making the target batch-invariant would be its own project (MTP-DRAFT.md "Greedy identity").
   - The research accept rules `look:<m>`, `tier`, `cost`, `vratio`, the per-token quality log and the
     `LLAMA_SPEC_ADV` stress switch were never committed; the code is kept on the box in
     `/work/bench/mtp4/worktree-backup-2026-10-29` (full.diff on 22642918d).

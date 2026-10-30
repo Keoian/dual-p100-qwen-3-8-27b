@@ -433,6 +433,35 @@ to 0.025, and with them the MTP head's. `exact`'s distribution stays the model's
 sessions, consistent with one rate), but `esc+0.2` follows the head, so its puzzle rate moved with the session
 (22.0 / 11.0 / 10.0%). A/B arms compared across sessions are independent samples, not pairs.
 
+## The MTP draft under exact: coverage, not precision (2026-10-29/30, CHANGES §25)
+
+**The draft scores tokens with its own LM head.** At load the MTP draft gets a Q4_0 copy of the output matrix's first
+81,920 rows (OPTLOG 226); every other id gets -inf. So it can never propose `<|im_end|>` or `</think>`, and 1.1-1.4%
+of the model's served mass per row is out of its reach. A wider copy gains overlap; a more precise one (Q8_0) gains
+almost nothing, and neither do a q8_0 draft KV cache or a Q8_0 MTP block (at most +0.1% overlap each, a net loss after
+their step cost). Under exact, what is left is the head itself: per drafted row it overlaps the model's distribution
+0.78 in chat and 0.74 in thinking. Retraining the head is the remaining lever (MTP-DRAFT.md).
+
+**The draft's distribution and the stop tables have to be fit together.** Sampling the draft with the request's own
+settings (top-p, temperature, presence) stays exact and raised accepted tokens per cycle by 6.7% in chat, but the stop
+tables, fit on temperature-1.0 drafts, read its sharper probabilities as safer and drafted 15% more rows. At 3.9 ms of
+verify plus 1.3 ms of drafting per row against ~19.4 ms per committed token, a row pays only if its prefix survives
+with probability above ~0.27; the extra rows ate the gain (+0.7%, n.s.).
+
+**A reimplementation must copy the serving numerics, not the architecture alone.** A PyTorch copy of the head matched
+llama.cpp exactly once quantization was removed (1,006 steps, 100% top-1). At production precision it agreed only 93%
+on top-1 until it used the Q4_0 81,920-row draft head; with that, the Hadamard-rotated q4_0 draft KV and the
+activation quantization (q8_1 on CUDA, Q8_K / Q8_0 on CPU) emulated, 98.5-100%.
+
+**Greedy output depends on the verify schedule.** Changing only how many tokens the stock head drafts changed 11 of
+24 greedy replies, at near-ties. The model's logits at a position depend on which verify batch and row computed it,
+so any change to acceptance changes some greedy replies without changing the model's math; a byte-identity check
+certifies only changes that keep the schedule. Under sampling, exact acceptance still writes the model's distribution.
+
+**A measurement trap:** a numpy 2 reader of a 2.3 GB dump computed record offsets in int32 (NEP 50 keeps the dtype of
+the header fields) and wrapped past 2 GiB, which failed a whole window's offline checks. Convert header fields to
+Python ints before doing offset arithmetic.
+
 ## What transfers to other Pascal cards
 
 - **Direct KV-cache dequantization** helps any pre-Volta GPU with a quantized KV cache, and more

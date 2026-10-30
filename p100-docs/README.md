@@ -36,8 +36,9 @@ separate context with its LoRA; off in its production setup since §18), and fix
 the softmax race (Caveats below). Later: a q8_0 K / q4_0 V cache at the full 262k with 1440p images and the Q8_0
 projector (§18), thinking toggles that keep the prompt cache and cheaper repetition penalties (§19, §21), and a
 learned stop rule for the MTP draft (§22), and opt-in approximate accept rules for the MTP draft, chosen per
-request (§23; off by default), with a bounded one, `ratio:<c>` (§24). The root [README](../README.md) leads with its
-production numbers. [CHANGES.md §15-24](CHANGES.md) has the commits and
+request (§23; off by default), with a bounded one, `ratio:<c>` (§24); production is back on the exact rule since
+10-30 (§25, [MTP-DRAFT.md](MTP-DRAFT.md)). The root [README](../README.md) leads with its
+production numbers. [CHANGES.md §15-25](CHANGES.md) has the commits and
 numbers and the PRs to Kmic-68's `p100-optimizations` (#5-#16), [FINDINGS.md](FINDINGS.md) what worked and what
 didn't, [QUICKSTART.md](QUICKSTART.md) the serving notes, and [deploy/](deploy/README.md) the recipe to bring the
 whole production setup up on another machine.
@@ -56,6 +57,7 @@ Perplexity 2.6101, all-fp32 2.6095; at this size perplexity can't separate them,
 | [QUICKSTART.md](QUICKSTART.md) | how to run it, and what each flag is for |
 | [CHANGES.md](CHANGES.md) | every code change, grouped by subsystem, with what it measured |
 | [FINDINGS.md](FINDINGS.md) | what worked, what failed, what transfers to other Pascal cards, and the measurement traps |
+| [MTP-DRAFT.md](MTP-DRAFT.md) | the MTP draft under the exact accept rule: what limits it, the speed-ups still open, the retraining it would take |
 | [BUILD.md](BUILD.md) | building from source and verifying a build |
 | [deploy/](deploy/README.md) | `p100-optimizations-keoian`'s production setup: container, build, pinned downloads, start scripts, power limit, acceptance checks |
 | [THREE-GPU.md](THREE-GPU.md) | measurements on three P100s from a contributor: NCCL, graphs, cancel latency |
