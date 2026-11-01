@@ -5,6 +5,20 @@ rules" items of the tyler-port section below (the operator's mission brief lives
 on the build box).
 For the results and changes, see `p100-docs/`; to bring the production setup up elsewhere, `p100-docs/deploy/`.
 
+## Qwen3.8-Flash-Next on Strata, tried on the reference box (2026-10-31)
+
+From 10-31 09:36 UTC to 11-01 01:31 UTC production ran Qwen3.8-Flash-Next on the Strata engine instead of this setup,
+and is back on this setup since (Tyler's call). The configs, scripts, two opt-in Pascal kernels and every measurement
+live in Tyler's Strata fork, branch `p100-optimizations` (`p100/README.md`). Against this setup:
+
+| | Flash-Next IQ3_XXS (Strata) | Flash-Next Q2_0 (Strata) | This setup (27B Q6_K) |
+| --- | ---: | ---: | ---: |
+| Decode, greedy, MTP on | 42.7 tok/s (43.95 with the opt-in kernels) | 52.9 tok/s | 51.6 tok/s (chat, `exact`) |
+| Prompt, 4.5K tokens | 224 tok/s (261 with the kernels) | 274 tok/s | ~450 tok/s (short prompts) |
+| Top-1 against Q8_0 (Strata's docs/QUANTS.md) | 84.5% | 80.6% | - |
+
+Both Flash-Next packs held the full 262,144-token context (a code word in a 249,498-token prompt was found).
+
 ## Branch `p100-optimizations-keoian` (state 2026-10-30; default branch since 10-22, production on the reference box)
 
 - Branch contents (CHANGES §18-25):
